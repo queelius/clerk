@@ -41,7 +41,7 @@ Clerk is intentionally dumb. It's a bridge, not a brain.
 
 1. **Thin client** - Minimal logic. Fetch, format, send.
 2. **JSON-native** - Every command has `--json` output
-3. **Stateless** - Server is truth. Minimal local caching.
+3. **Server is truth** - Email servers are authoritative. Local cache accelerates, never diverges.
 4. **No embedded LLM** - Claude Code provides intelligence
 5. **Paranoid sending** - Multiple safeguards on outbound
 
@@ -97,6 +97,129 @@ A conversation (thread) is the primary unit:
 
 ---
 
+## Cache Accelerator
+
+### Why Cache?
+
+IMAP is slow. Every operation involves:
+- TLS handshake
+- Authentication
+- Folder selection
+- Data transfer
+
+A typical Claude Code session might issue 10-20 commands. Without caching, that's 10-20 round trips to Gmail/Fastmail, each taking 500ms-2s. Worse, providers like Gmail have aggressive rate limits that throttle repeated connections.
+
+IMAP SEARCH is also limited. Most servers don't support full-text body search, complex boolean queries, or sorting by relevance.
+
+### The Solution: Transparent Cache
+
+Clerk maintains a rolling-window cache in SQLite:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                 Cache (rolling window)                       │
+│                                                              │
+│   ┌─────────────┐  ┌─────────────┐  ┌──────────────────┐    │
+│   │   Headers   │  │   Bodies    │  │   Thread Index   │    │
+│   │  (always)   │  │ (on-demand) │  │   (computed)     │    │
+│   └─────────────┘  └─────────────┘  └──────────────────┘    │
+│                                                              │
+│   Window: 7 days (configurable)                              │
+│   Freshness: 5 min inbox, 1 hour older messages             │
+│   Storage: ~/.local/share/clerk/cache.db                     │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Cache Behavior
+
+The cache is **transparent** - commands work identically whether hitting cache or server:
+
+```bash
+clerk inbox --json        # Returns from cache if fresh, else fetches
+clerk inbox --fresh       # Bypasses cache, fetches from server, updates cache
+clerk show conv123        # Fetches bodies if not cached
+```
+
+**Freshness rules:**
+- Inbox listing: 5 minutes (new mail might arrive)
+- Message bodies: 1 hour (content doesn't change)
+- Thread structure: recomputed on header updates
+
+**Automatic maintenance:**
+- Messages older than window (default 7 days) pruned on each sync
+- Cache can be deleted anytime: `clerk cache clear`
+- System works without cache (just slower)
+
+### What Cache Enables
+
+**Fast repeated queries:**
+```bash
+# First call: fetches from server (~1s)
+clerk inbox --json
+
+# Second call within 5 min: instant from cache
+clerk inbox --json
+```
+
+**Rich local search:**
+```bash
+# SQLite FTS on cached bodies - queries IMAP can't do:
+clerk search "from:alice deadline project"
+clerk search "body:quarterly revenue"
+```
+
+**Stable session state:**
+During a Claude Code conversation, the inbox doesn't shift unexpectedly mid-analysis.
+
+### Cache Schema
+
+```sql
+CREATE TABLE messages (
+    message_id TEXT PRIMARY KEY,
+    conv_id TEXT,
+    account TEXT,
+    folder TEXT,
+    from_addr TEXT,
+    from_name TEXT,
+    to_json TEXT,           -- JSON array
+    cc_json TEXT,
+    subject TEXT,
+    date_utc TEXT,
+    flags TEXT,             -- JSON: ["seen", "flagged"]
+    body_text TEXT,         -- NULL until fetched
+    body_html TEXT,
+    attachments_json TEXT,  -- Metadata only, not content
+    headers_fetched_at TEXT,
+    body_fetched_at TEXT
+);
+
+CREATE INDEX idx_conv ON messages(conv_id);
+CREATE INDEX idx_date ON messages(date_utc DESC);
+CREATE INDEX idx_from ON messages(from_addr);
+CREATE INDEX idx_folder ON messages(folder);
+
+-- Full-text search on cached content
+CREATE VIRTUAL TABLE messages_fts USING fts5(
+    subject, body_text, from_name, from_addr
+);
+```
+
+### Not an Archive
+
+The cache is explicitly **not** an archive:
+
+| Cache (clerk) | Archive (mtk) |
+|---------------|---------------|
+| 7-day window | All history |
+| Ephemeral | Permanent |
+| Performance optimization | Source of truth |
+| Delete anytime | Backup/preserve |
+| No attachments | Full extraction |
+
+For long-term email preservation and deep analysis, use mtk.
+
+---
+
 ## CLI Commands
 
 All commands support `--json` for structured output. Without it, human-readable formatting.
@@ -109,25 +232,30 @@ clerk inbox --limit 50              # More results
 clerk inbox --unread                # Only unread
 clerk inbox --account work          # Specific account
 clerk inbox --json                  # Structured output for Claude Code
+clerk inbox --fresh                 # Bypass cache, fetch from server
 
 clerk show <conv-id>                # Full conversation (all messages)
 clerk show <conv-id> --json         # Structured for Claude Code
+clerk show <conv-id> --fresh        # Force fetch from server
 clerk show <message-id>             # Single message
 
 clerk unread                        # Quick unread count per folder
 clerk unread --json
 ```
 
+All read commands support `--fresh` to bypass cache and fetch directly from the server. The fresh data is written back to the cache.
+
 ### Search
 
 ```bash
-clerk search "from:alice project"   # IMAP SEARCH
+clerk search "from:alice project"   # Search within cache window
 clerk search "has:attachment"       # Common operators
 clerk search "after:2025-01-01"     # Date filters
+clerk search "body:quarterly"       # Full-text body search (cache only)
 clerk search "subject:urgent" --json
 ```
 
-Search is server-side (IMAP SEARCH), not local.
+Search uses SQLite FTS on the local cache, enabling queries IMAP can't do (like body full-text). Results are limited to the cache window (default 7 days). For older messages, use `--server` to fall back to IMAP SEARCH (with its limitations).
 
 ### Compose & Send
 
@@ -174,6 +302,16 @@ clerk mark-read <message-id>        # Mark as read
 clerk mark-unread <message-id>
 ```
 
+### Cache Management
+
+```bash
+clerk cache status                  # Show cache stats (size, age, entries)
+clerk cache clear                   # Delete all cached data
+clerk cache refresh                 # Force full refresh from server
+```
+
+Cache operations are rarely needed - the cache is self-maintaining.
+
 ---
 
 ## Exit Codes
@@ -218,6 +356,12 @@ accounts:
     oauth:
       client_id_file: ~/.config/clerk/gmail_client.json
       # Tokens stored in keyring
+
+# Cache
+cache:
+  window_days: 7               # How far back to cache (default: 7)
+  inbox_freshness_min: 5       # Inbox stale after N minutes (default: 5)
+  body_freshness_min: 60       # Bodies stale after N minutes (default: 60)
 
 # Safety
 send:
@@ -357,9 +501,9 @@ Append-only log of all sends:
 - **Summarize** - Claude Code does this
 - **Prioritize** - Claude Code does this
 - **Draft content** - Claude Code composes, clerk just stores/sends
-- **Store email** - Server is truth, clerk caches minimally
+- **Archive email** - Server is truth, cache is ephemeral (use mtk for archiving)
 - **Parse attachments** - Returns metadata only
-- **Offline mode** - Requires server connectivity
+- **Offline mode** - Cache helps with recent data, but sending requires connectivity
 
 ---
 
@@ -398,12 +542,13 @@ google-auth      # Gmail OAuth (optional)
 2. Fall back to References/In-Reply-To header walking
 3. conv_id = hash of thread root message_id
 
-### Cache Strategy
+### Cache Implementation
 
-- Header-only fetch for inbox listing
-- Full fetch on `show`
-- 5-minute TTL for cache entries
-- Cache is optional - delete anytime
+See [Cache Accelerator](#cache-accelerator) for detailed design. Key points:
+- SQLite with FTS5 for full-text search
+- Headers fetched eagerly, bodies lazily
+- Automatic pruning of messages outside window
+- Connection pooling to reduce IMAP overhead
 
 ---
 
@@ -411,15 +556,17 @@ google-auth      # Gmail OAuth (optional)
 
 ### v0.1 - Core
 - [ ] IMAP connect/fetch (imapclient)
+- [ ] SQLite cache with FTS5
 - [ ] Conversation threading
 - [ ] JSON output for all commands
 - [ ] Draft creation with reply headers
 - [ ] SMTP send with confirmation
 
-### v0.2 - Accounts
+### v0.2 - Accounts & Polish
 - [ ] Multiple accounts
 - [ ] Gmail OAuth flow
 - [ ] Keyring integration
+- [ ] Cache management commands
 
 ### v0.3 - MCP
 - [ ] MCP server implementation
