@@ -1,0 +1,755 @@
+"""Clerk CLI - A thin CLI for LLM agents to interact with email."""
+
+import json
+import sys
+from datetime import datetime
+from typing import Annotated, Optional
+
+import typer
+from rich.console import Console
+from rich.table import Table
+
+from . import __version__
+from .cache import get_cache
+from .config import ensure_dirs, get_config, load_config
+from .drafts import get_draft_manager
+from .imap_client import get_imap_client
+from .models import Address, ExitCode, MessageFlag
+from .smtp_client import check_send_allowed, format_draft_preview, send_draft
+
+app = typer.Typer(
+    name="clerk",
+    help="A thin CLI for LLM agents to interact with email.",
+    no_args_is_help=True,
+)
+
+console = Console()
+err_console = Console(stderr=True)
+
+
+def output_json(data: dict | list) -> None:
+    """Output data as JSON."""
+    print(json.dumps(data, default=str, indent=2))
+
+
+def exit_with_code(code: ExitCode, message: str | None = None) -> None:
+    """Exit with a specific exit code and optional message."""
+    if message:
+        err_console.print(f"[red]Error:[/red] {message}")
+    raise typer.Exit(code.value)
+
+
+# ============================================================================
+# Inbox & Fetch Commands
+# ============================================================================
+
+
+@app.command()
+def inbox(
+    limit: Annotated[int, typer.Option("--limit", "-n", help="Number of conversations")] = 20,
+    unread: Annotated[bool, typer.Option("--unread", "-u", help="Only show unread")] = False,
+    account: Annotated[Optional[str], typer.Option("--account", "-a", help="Account name")] = None,
+    folder: Annotated[str, typer.Option("--folder", "-f", help="Folder to list")] = "INBOX",
+    fresh: Annotated[bool, typer.Option("--fresh", help="Bypass cache, fetch from server")] = False,
+    as_json: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
+) -> None:
+    """List recent conversations in inbox."""
+    ensure_dirs()
+    config = get_config()
+    cache = get_cache()
+
+    account_name, account_config = config.get_account(account)
+
+    # Check cache freshness
+    if not fresh and cache.is_inbox_fresh(account_name, config.cache.inbox_freshness_min):
+        # Serve from cache
+        conversations = cache.list_conversations(
+            account=account_name,
+            folder=folder,
+            unread_only=unread,
+            limit=limit,
+        )
+    else:
+        # Fetch from server
+        with get_imap_client(account_name) as client:
+            messages = client.fetch_messages(
+                folder=folder,
+                limit=limit * 3,  # Fetch more to account for threading
+                unread_only=unread,
+                fetch_bodies=False,  # Headers only for listing
+            )
+
+            # Store in cache
+            for msg in messages:
+                cache.store_message(msg)
+
+            cache.mark_inbox_synced(account_name)
+
+        # Prune old messages
+        cache.prune_old_messages(config.cache.window_days)
+
+        # Get conversations from cache
+        conversations = cache.list_conversations(
+            account=account_name,
+            folder=folder,
+            unread_only=unread,
+            limit=limit,
+        )
+
+    if as_json:
+        output_json([c.model_dump() for c in conversations])
+        return
+
+    # Human-readable output
+    if not conversations:
+        console.print("[dim]No conversations found.[/dim]")
+        return
+
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("ID", style="dim", width=12)
+    table.add_column("From", width=25)
+    table.add_column("Subject", width=40)
+    table.add_column("Date", width=12)
+    table.add_column("Msgs", justify="right", width=4)
+
+    for conv in conversations:
+        # Get primary participant (not self)
+        participants = [p for p in conv.participants if p != account_config.from_.address]
+        from_str = participants[0] if participants else conv.participants[0] if conv.participants else ""
+
+        # Format date
+        date_str = conv.latest_date.strftime("%b %d")
+
+        # Unread indicator
+        subject = conv.subject
+        if conv.unread_count > 0:
+            subject = f"[bold]{subject}[/bold]"
+
+        table.add_row(
+            conv.conv_id,
+            from_str[:25],
+            subject[:40],
+            date_str,
+            str(conv.message_count),
+        )
+
+    console.print(table)
+
+
+@app.command()
+def show(
+    conv_or_msg_id: Annotated[str, typer.Argument(help="Conversation or message ID")],
+    fresh: Annotated[bool, typer.Option("--fresh", help="Bypass cache, fetch from server")] = False,
+    as_json: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
+) -> None:
+    """Show a conversation or message."""
+    ensure_dirs()
+    cache = get_cache()
+    config = get_config()
+
+    # Try as conversation first
+    conv = cache.get_conversation(conv_or_msg_id)
+
+    if conv:
+        # Fetch bodies if needed
+        for msg in conv.messages:
+            if msg.body_text is None:
+                if fresh or not cache.is_fresh(msg.message_id, config.cache.body_freshness_min, check_body=True):
+                    # Fetch from server
+                    with get_imap_client(msg.account) as client:
+                        body_text, body_html = client.fetch_message_body(msg.folder, msg.message_id)
+                        cache.update_body(msg.message_id, body_text, body_html)
+                        msg.body_text = body_text
+                        msg.body_html = body_html
+
+        if as_json:
+            output_json(conv.model_dump())
+            return
+
+        # Human-readable output
+        console.print(f"[bold]Subject:[/bold] {conv.subject}")
+        console.print(f"[bold]Participants:[/bold] {', '.join(conv.participants)}")
+        console.print(f"[bold]Messages:[/bold] {conv.message_count}")
+        console.print()
+
+        for i, msg in enumerate(conv.messages, 1):
+            console.print(f"[bold cyan]--- Message {i} ---[/bold cyan]")
+            console.print(f"[bold]From:[/bold] {msg.from_}")
+            console.print(f"[bold]Date:[/bold] {msg.date}")
+            console.print()
+            console.print(msg.body_text or "[dim](no body)[/dim]")
+            console.print()
+
+        return
+
+    # Try as message ID
+    msg = cache.get_message(conv_or_msg_id)
+    if msg:
+        if msg.body_text is None:
+            if fresh or not cache.is_fresh(msg.message_id, config.cache.body_freshness_min, check_body=True):
+                with get_imap_client(msg.account) as client:
+                    body_text, body_html = client.fetch_message_body(msg.folder, msg.message_id)
+                    cache.update_body(msg.message_id, body_text, body_html)
+                    msg.body_text = body_text
+                    msg.body_html = body_html
+
+        if as_json:
+            output_json(msg.model_dump())
+            return
+
+        console.print(f"[bold]From:[/bold] {msg.from_}")
+        console.print(f"[bold]To:[/bold] {', '.join(str(a) for a in msg.to)}")
+        console.print(f"[bold]Date:[/bold] {msg.date}")
+        console.print(f"[bold]Subject:[/bold] {msg.subject}")
+        console.print()
+        console.print(msg.body_text or "[dim](no body)[/dim]")
+        return
+
+    exit_with_code(ExitCode.NOT_FOUND, f"Not found: {conv_or_msg_id}")
+
+
+@app.command(name="unread")
+def unread_cmd(
+    account: Annotated[Optional[str], typer.Option("--account", "-a", help="Account name")] = None,
+    as_json: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
+) -> None:
+    """Show unread message counts by folder."""
+    ensure_dirs()
+    config = get_config()
+    account_name, _ = config.get_account(account)
+
+    with get_imap_client(account_name) as client:
+        counts = client.get_unread_counts()
+
+    if as_json:
+        output_json(counts.model_dump())
+        return
+
+    if counts.total == 0:
+        console.print("[green]No unread messages.[/green]")
+        return
+
+    console.print(f"[bold]Total unread:[/bold] {counts.total}")
+    for folder, count in sorted(counts.folders.items()):
+        console.print(f"  {folder}: {count}")
+
+
+@app.command()
+def search(
+    query: Annotated[str, typer.Argument(help="Search query")],
+    limit: Annotated[int, typer.Option("--limit", "-n", help="Max results")] = 20,
+    account: Annotated[Optional[str], typer.Option("--account", "-a", help="Account name")] = None,
+    as_json: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
+) -> None:
+    """Search messages in cache.
+
+    Uses FTS5 for full-text search. Supports operators like:
+    - from:alice
+    - subject:meeting
+    - body:quarterly (searches cached bodies)
+    """
+    ensure_dirs()
+    cache = get_cache()
+
+    messages = cache.search(query, account=account, limit=limit)
+
+    if as_json:
+        output_json([m.model_dump() for m in messages])
+        return
+
+    if not messages:
+        console.print("[dim]No results found.[/dim]")
+        return
+
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("ID", style="dim", width=12)
+    table.add_column("From", width=25)
+    table.add_column("Subject", width=40)
+    table.add_column("Date", width=12)
+
+    for msg in messages:
+        table.add_row(
+            msg.conv_id,
+            msg.from_.addr[:25],
+            msg.subject[:40],
+            msg.date.strftime("%b %d"),
+        )
+
+    console.print(table)
+
+
+# ============================================================================
+# Compose & Send Commands
+# ============================================================================
+
+draft_app = typer.Typer(help="Draft management commands")
+app.add_typer(draft_app, name="draft")
+
+
+@draft_app.command(name="create")
+def draft_create(
+    to: Annotated[str, typer.Option("--to", "-t", help="Recipient email address")],
+    subject: Annotated[str, typer.Option("--subject", "-s", help="Subject line")],
+    body: Annotated[str, typer.Option("--body", "-b", help="Message body")],
+    cc: Annotated[Optional[str], typer.Option("--cc", help="CC recipients (comma-separated)")] = None,
+    account: Annotated[Optional[str], typer.Option("--account", "-a", help="Account name")] = None,
+    reply_to: Annotated[Optional[str], typer.Option("--reply-to", help="Conversation ID to reply to")] = None,
+    as_json: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
+) -> None:
+    """Create a new draft message."""
+    ensure_dirs()
+    config = get_config()
+    manager = get_draft_manager()
+
+    account_name, _ = config.get_account(account)
+
+    # Parse addresses
+    to_addrs = [Address(addr=a.strip(), name="") for a in to.split(",")]
+    cc_addrs = [Address(addr=a.strip(), name="") for a in cc.split(",")] if cc else []
+
+    if reply_to:
+        # Create a reply
+        draft = manager.create_reply(
+            account=account_name,
+            conv_id=reply_to,
+            body_text=body,
+        )
+    else:
+        draft = manager.create(
+            account=account_name,
+            to=to_addrs,
+            cc=cc_addrs,
+            subject=subject,
+            body_text=body,
+        )
+
+    if as_json:
+        output_json({"draft_id": draft.draft_id})
+        return
+
+    console.print(f"[green]Draft created:[/green] {draft.draft_id}")
+
+
+@draft_app.command(name="list")
+def draft_list(
+    account: Annotated[Optional[str], typer.Option("--account", "-a", help="Account name")] = None,
+    as_json: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
+) -> None:
+    """List pending drafts."""
+    ensure_dirs()
+    manager = get_draft_manager()
+
+    drafts = manager.list(account=account)
+
+    if as_json:
+        output_json([d.model_dump() for d in drafts])
+        return
+
+    if not drafts:
+        console.print("[dim]No drafts.[/dim]")
+        return
+
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("ID", style="dim", width=20)
+    table.add_column("To", width=30)
+    table.add_column("Subject", width=35)
+    table.add_column("Created", width=12)
+
+    for draft in drafts:
+        to_str = ", ".join(a.addr for a in draft.to)
+        table.add_row(
+            draft.draft_id,
+            to_str[:30],
+            draft.subject[:35],
+            draft.created_at.strftime("%b %d %H:%M"),
+        )
+
+    console.print(table)
+
+
+@draft_app.command(name="show")
+def draft_show(
+    draft_id: Annotated[str, typer.Argument(help="Draft ID")],
+    as_json: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
+) -> None:
+    """Show a draft."""
+    ensure_dirs()
+    manager = get_draft_manager()
+
+    draft = manager.get(draft_id)
+    if not draft:
+        exit_with_code(ExitCode.NOT_FOUND, f"Draft not found: {draft_id}")
+
+    if as_json:
+        output_json(draft.model_dump())
+        return
+
+    console.print(format_draft_preview(draft))
+
+
+@draft_app.command(name="delete")
+def draft_delete(
+    draft_id: Annotated[str, typer.Argument(help="Draft ID")],
+) -> None:
+    """Delete a draft without sending."""
+    ensure_dirs()
+    manager = get_draft_manager()
+
+    if manager.delete(draft_id):
+        console.print(f"[green]Deleted draft:[/green] {draft_id}")
+    else:
+        exit_with_code(ExitCode.NOT_FOUND, f"Draft not found: {draft_id}")
+
+
+@app.command()
+def send(
+    draft_id: Annotated[str, typer.Argument(help="Draft ID to send")],
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation")] = False,
+    as_json: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
+) -> None:
+    """Send a draft message."""
+    ensure_dirs()
+    config = get_config()
+    manager = get_draft_manager()
+
+    draft = manager.get(draft_id)
+    if not draft:
+        exit_with_code(ExitCode.NOT_FOUND, f"Draft not found: {draft_id}")
+
+    # Check if sending is allowed
+    allowed, error = check_send_allowed(draft, draft.account)
+    if not allowed:
+        exit_with_code(ExitCode.SEND_BLOCKED, error)
+
+    # Show preview and confirm
+    if not yes and config.send.require_confirmation:
+        console.print("[bold]Preview:[/bold]")
+        console.print(format_draft_preview(draft))
+        console.print()
+
+        if not typer.confirm("Send this message?"):
+            console.print("[yellow]Cancelled.[/yellow]")
+            raise typer.Exit(0)
+
+    # Send it
+    result = send_draft(draft_id)
+
+    if as_json:
+        output_json(result.model_dump())
+        if not result.success:
+            raise typer.Exit(ExitCode.CONNECTION_ERROR.value)
+        return
+
+    if result.success:
+        console.print(f"[green]Sent![/green] Message-ID: {result.message_id}")
+    else:
+        exit_with_code(ExitCode.CONNECTION_ERROR, result.error)
+
+
+# ============================================================================
+# Folder Operations
+# ============================================================================
+
+
+@app.command()
+def folders(
+    account: Annotated[Optional[str], typer.Option("--account", "-a", help="Account name")] = None,
+    as_json: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
+) -> None:
+    """List folders/labels."""
+    ensure_dirs()
+    config = get_config()
+    account_name, _ = config.get_account(account)
+
+    with get_imap_client(account_name) as client:
+        folder_list = client.list_folders()
+
+    if as_json:
+        output_json([f.model_dump() for f in folder_list])
+        return
+
+    for folder in folder_list:
+        flags = " ".join(f"[dim]{f}[/dim]" for f in folder.flags)
+        console.print(f"{folder.name} {flags}")
+
+
+@app.command()
+def move(
+    message_id: Annotated[str, typer.Argument(help="Message ID")],
+    to_folder: Annotated[str, typer.Argument(help="Destination folder")],
+    from_folder: Annotated[str, typer.Option("--from", help="Source folder")] = "INBOX",
+    account: Annotated[Optional[str], typer.Option("--account", "-a", help="Account name")] = None,
+) -> None:
+    """Move a message to another folder."""
+    ensure_dirs()
+    config = get_config()
+    cache = get_cache()
+    account_name, _ = config.get_account(account)
+
+    with get_imap_client(account_name) as client:
+        client.move_message(message_id, from_folder, to_folder)
+
+    # Update cache
+    cache.move_message(message_id, to_folder)
+    console.print(f"[green]Moved to {to_folder}[/green]")
+
+
+@app.command()
+def archive(
+    message_id: Annotated[str, typer.Argument(help="Message ID")],
+    account: Annotated[Optional[str], typer.Option("--account", "-a", help="Account name")] = None,
+) -> None:
+    """Archive a message."""
+    ensure_dirs()
+    config = get_config()
+    cache = get_cache()
+    account_name, _ = config.get_account(account)
+
+    with get_imap_client(account_name) as client:
+        client.archive_message(message_id)
+
+    # Update cache
+    cache.move_message(message_id, "Archive")
+    console.print("[green]Archived.[/green]")
+
+
+@app.command()
+def flag(
+    message_id: Annotated[str, typer.Argument(help="Message ID")],
+    account: Annotated[Optional[str], typer.Option("--account", "-a", help="Account name")] = None,
+) -> None:
+    """Flag/star a message."""
+    ensure_dirs()
+    config = get_config()
+    cache = get_cache()
+    account_name, _ = config.get_account(account)
+
+    msg = cache.get_message(message_id)
+    folder = msg.folder if msg else "INBOX"
+
+    with get_imap_client(account_name) as client:
+        client.add_flags(folder, message_id, [MessageFlag.FLAGGED])
+
+    # Update cache
+    if msg:
+        flags = list(msg.flags)
+        if MessageFlag.FLAGGED not in flags:
+            flags.append(MessageFlag.FLAGGED)
+        cache.update_flags(message_id, flags)
+
+    console.print("[green]Flagged.[/green]")
+
+
+@app.command(name="mark-read")
+def mark_read(
+    message_id: Annotated[str, typer.Argument(help="Message ID")],
+    account: Annotated[Optional[str], typer.Option("--account", "-a", help="Account name")] = None,
+) -> None:
+    """Mark a message as read."""
+    ensure_dirs()
+    config = get_config()
+    cache = get_cache()
+    account_name, _ = config.get_account(account)
+
+    msg = cache.get_message(message_id)
+    folder = msg.folder if msg else "INBOX"
+
+    with get_imap_client(account_name) as client:
+        client.add_flags(folder, message_id, [MessageFlag.SEEN])
+
+    # Update cache
+    if msg:
+        flags = list(msg.flags)
+        if MessageFlag.SEEN not in flags:
+            flags.append(MessageFlag.SEEN)
+        cache.update_flags(message_id, flags)
+
+    console.print("[green]Marked as read.[/green]")
+
+
+@app.command(name="mark-unread")
+def mark_unread(
+    message_id: Annotated[str, typer.Argument(help="Message ID")],
+    account: Annotated[Optional[str], typer.Option("--account", "-a", help="Account name")] = None,
+) -> None:
+    """Mark a message as unread."""
+    ensure_dirs()
+    config = get_config()
+    cache = get_cache()
+    account_name, _ = config.get_account(account)
+
+    msg = cache.get_message(message_id)
+    folder = msg.folder if msg else "INBOX"
+
+    with get_imap_client(account_name) as client:
+        client.remove_flags(folder, message_id, [MessageFlag.SEEN])
+
+    # Update cache
+    if msg:
+        flags = [f for f in msg.flags if f != MessageFlag.SEEN]
+        cache.update_flags(message_id, flags)
+
+    console.print("[green]Marked as unread.[/green]")
+
+
+# ============================================================================
+# Cache Management
+# ============================================================================
+
+cache_app = typer.Typer(help="Cache management commands")
+app.add_typer(cache_app, name="cache")
+
+
+@cache_app.command(name="status")
+def cache_status(
+    as_json: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
+) -> None:
+    """Show cache statistics."""
+    ensure_dirs()
+    cache = get_cache()
+    stats = cache.get_stats()
+
+    if as_json:
+        output_json(stats.model_dump())
+        return
+
+    console.print(f"[bold]Messages:[/bold] {stats.message_count}")
+    console.print(f"[bold]Conversations:[/bold] {stats.conversation_count}")
+
+    if stats.oldest_message:
+        console.print(f"[bold]Oldest:[/bold] {stats.oldest_message.strftime('%Y-%m-%d')}")
+    if stats.newest_message:
+        console.print(f"[bold]Newest:[/bold] {stats.newest_message.strftime('%Y-%m-%d')}")
+
+    size_mb = stats.cache_size_bytes / (1024 * 1024)
+    console.print(f"[bold]Size:[/bold] {size_mb:.2f} MB")
+
+    if stats.last_sync:
+        console.print(f"[bold]Last sync:[/bold] {stats.last_sync.strftime('%Y-%m-%d %H:%M')}")
+
+
+@cache_app.command(name="clear")
+def cache_clear() -> None:
+    """Clear all cached data."""
+    ensure_dirs()
+    cache = get_cache()
+
+    if typer.confirm("Clear all cached messages and drafts?"):
+        cache.clear()
+        console.print("[green]Cache cleared.[/green]")
+
+
+@cache_app.command(name="refresh")
+def cache_refresh(
+    account: Annotated[Optional[str], typer.Option("--account", "-a", help="Account name")] = None,
+) -> None:
+    """Force full refresh from server."""
+    ensure_dirs()
+    config = get_config()
+    cache = get_cache()
+
+    account_name, _ = config.get_account(account)
+
+    console.print(f"[dim]Refreshing from {account_name}...[/dim]")
+
+    with get_imap_client(account_name) as client:
+        messages = client.fetch_messages(
+            folder="INBOX",
+            limit=200,
+            fetch_bodies=True,
+        )
+
+        for msg in messages:
+            cache.store_message(msg)
+
+        cache.mark_inbox_synced(account_name)
+
+    cache.prune_old_messages(config.cache.window_days)
+    console.print(f"[green]Refreshed {len(messages)} messages.[/green]")
+
+
+# ============================================================================
+# Account & Status Commands
+# ============================================================================
+
+
+@app.command()
+def status(
+    as_json: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
+) -> None:
+    """Show connection status and account info."""
+    ensure_dirs()
+    config = get_config()
+
+    status_info = {
+        "version": __version__,
+        "accounts": {},
+    }
+
+    for name in config.accounts:
+        try:
+            with get_imap_client(name) as client:
+                status_info["accounts"][name] = {
+                    "connected": True,
+                    "folders": len(client.list_folders()),
+                }
+        except Exception as e:
+            status_info["accounts"][name] = {
+                "connected": False,
+                "error": str(e),
+            }
+
+    if as_json:
+        output_json(status_info)
+        return
+
+    console.print(f"[bold]Clerk v{__version__}[/bold]")
+    console.print()
+
+    for name, info in status_info["accounts"].items():
+        if info["connected"]:
+            console.print(f"[green]✓[/green] {name} - {info['folders']} folders")
+        else:
+            console.print(f"[red]✗[/red] {name} - {info.get('error', 'Unknown error')}")
+
+
+@app.command()
+def accounts(
+    as_json: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
+) -> None:
+    """List configured accounts."""
+    ensure_dirs()
+    config = get_config()
+
+    if as_json:
+        account_list = []
+        for name, acc in config.accounts.items():
+            account_list.append({
+                "name": name,
+                "protocol": acc.protocol,
+                "email": acc.from_.address,
+                "default": name == config.default_account,
+            })
+        output_json(account_list)
+        return
+
+    if not config.accounts:
+        console.print("[yellow]No accounts configured.[/yellow]")
+        console.print("Run 'clerk accounts add' to configure an account.")
+        return
+
+    for name, acc in config.accounts.items():
+        default = " [dim](default)[/dim]" if name == config.default_account else ""
+        console.print(f"[bold]{name}[/bold]{default}")
+        console.print(f"  Email: {acc.from_.address}")
+        console.print(f"  Protocol: {acc.protocol}")
+
+
+@app.command()
+def version() -> None:
+    """Show version information."""
+    console.print(f"clerk {__version__}")
+
+
+if __name__ == "__main__":
+    app()
