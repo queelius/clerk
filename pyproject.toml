@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "clerk"
-version = "0.1.0"
+version = "0.2.0"
 description = "A thin CLI for LLM agents to interact with email via IMAP/SMTP"
 readme = "README.md"
 license = "MIT"
@@ -30,10 +30,11 @@ dependencies = [
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
     "pyyaml>=6.0.0",
+    "google-auth>=2.0.0",
+    "google-auth-oauthlib>=1.0.0",
 ]
 
 [project.optional-dependencies]
-gmail = ["google-auth>=2.0.0", "google-auth-oauthlib>=1.0.0"]
 dev = [
     "pytest>=8.0.0",
     "pytest-cov>=4.0.0",

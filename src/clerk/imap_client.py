@@ -200,9 +200,12 @@ class ImapClient:
             return
 
         if self.config.protocol == "gmail":
-            # TODO: Implement OAuth for Gmail
-            raise NotImplementedError("Gmail OAuth not yet implemented")
+            self._connect_gmail()
+        else:
+            self._connect_imap()
 
+    def _connect_imap(self) -> None:
+        """Connect using standard IMAP with password authentication."""
         imap = self.config.imap
         if not imap:
             raise ValueError("IMAP configuration required")
@@ -211,6 +214,27 @@ class ImapClient:
 
         password = self.config.get_password(self.account_name)
         self._client.login(imap.username, password)
+
+    def _connect_gmail(self) -> None:
+        """Connect to Gmail using OAuth2 XOAUTH2 authentication."""
+        from .oauth import get_gmail_credentials, get_oauth2_string
+
+        oauth_config = self.config.oauth
+        if not oauth_config:
+            raise ValueError("OAuth configuration required for Gmail")
+
+        # Get credentials, refreshing if needed
+        credentials = get_gmail_credentials(
+            self.account_name,
+            client_id_file=oauth_config.client_id_file,
+        )
+
+        # Connect to Gmail IMAP
+        self._client = IMAPClient("imap.gmail.com", port=993, ssl=True)
+
+        # Authenticate with XOAUTH2
+        email = self.config.from_.address
+        self._client.oauth2_login(email, credentials.token)
 
     def disconnect(self) -> None:
         """Disconnect from the IMAP server."""

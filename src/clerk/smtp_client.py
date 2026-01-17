@@ -110,10 +110,6 @@ class SmtpClient:
 
     async def _send_async(self, draft: Draft) -> SendResult:
         """Send a draft message asynchronously."""
-        smtp = self.config.smtp
-        if not smtp:
-            return SendResult(success=False, error="SMTP not configured")
-
         # Create the message
         msg = self._create_message(draft)
         message_id = msg["Message-ID"]
@@ -122,18 +118,10 @@ class SmtpClient:
         all_recipients = [a.addr for a in draft.to + draft.cc + draft.bcc]
 
         try:
-            # Get password
-            password = self.config.get_password(self.account_name)
-
-            # Connect and send
-            await aiosmtplib.send(
-                msg,
-                hostname=smtp.host,
-                port=smtp.port,
-                username=smtp.username,
-                password=password,
-                start_tls=smtp.starttls,
-            )
+            if self.config.protocol == "gmail":
+                await self._send_gmail(msg)
+            else:
+                await self._send_imap(msg)
 
             return SendResult(success=True, message_id=message_id)
 
@@ -143,6 +131,52 @@ class SmtpClient:
             return SendResult(success=False, error=f"SMTP error: {e}")
         except Exception as e:
             return SendResult(success=False, error=f"Failed to send: {e}")
+
+    async def _send_imap(self, msg: MIMEMultipart) -> None:
+        """Send via standard SMTP with password authentication."""
+        smtp = self.config.smtp
+        if not smtp:
+            raise ValueError("SMTP not configured")
+
+        password = self.config.get_password(self.account_name)
+
+        await aiosmtplib.send(
+            msg,
+            hostname=smtp.host,
+            port=smtp.port,
+            username=smtp.username,
+            password=password,
+            start_tls=smtp.starttls,
+        )
+
+    async def _send_gmail(self, msg: MIMEMultipart) -> None:
+        """Send via Gmail SMTP with OAuth2 authentication."""
+        from .oauth import get_gmail_credentials, get_oauth2_string
+
+        oauth_config = self.config.oauth
+        if not oauth_config:
+            raise ValueError("OAuth configuration required for Gmail")
+
+        # Get credentials, refreshing if needed
+        credentials = get_gmail_credentials(
+            self.account_name,
+            client_id_file=oauth_config.client_id_file,
+        )
+
+        email = self.config.from_.address
+        oauth2_string = get_oauth2_string(email, credentials.token)
+
+        # Connect to Gmail SMTP with XOAUTH2
+        smtp = aiosmtplib.SMTP(hostname="smtp.gmail.com", port=587, start_tls=True)
+        await smtp.connect()
+        await smtp.starttls()
+
+        # Authenticate with XOAUTH2
+        await smtp.auth_plain(email, oauth2_string)
+
+        # Send the message
+        await smtp.send_message(msg)
+        await smtp.quit()
 
     def send(self, draft: Draft) -> SendResult:
         """Send a draft message (synchronous wrapper)."""

@@ -388,3 +388,235 @@ class TestSendCommand:
 
         result = runner.invoke(app, ["send", "draft_123"])
         assert result.exit_code == 5  # SEND_BLOCKED
+
+
+class TestAccountsCommands:
+    @patch("clerk.cli.get_config")
+    def test_accounts_list_empty(self, mock_config):
+        from clerk.config import ClerkConfig
+
+        mock_config.return_value = ClerkConfig()
+
+        result = runner.invoke(app, ["accounts"])
+        assert result.exit_code == 0
+        assert "No accounts configured" in result.stdout
+
+    @patch("clerk.cli.get_config")
+    def test_accounts_list_with_accounts(self, mock_config):
+        from clerk.config import (
+            AccountConfig,
+            ClerkConfig,
+            FromAddress,
+            ImapConfig,
+            SmtpConfig,
+        )
+
+        mock_config.return_value = ClerkConfig(
+            default_account="personal",
+            accounts={
+                "personal": AccountConfig(
+                    protocol="imap",
+                    imap=ImapConfig(host="imap.ex.com", username="user"),
+                    smtp=SmtpConfig(host="smtp.ex.com", username="user"),
+                    **{"from": FromAddress(address="user@example.com")},
+                ),
+                "work": AccountConfig(
+                    protocol="imap",
+                    imap=ImapConfig(host="imap.work.com", username="worker"),
+                    smtp=SmtpConfig(host="smtp.work.com", username="worker"),
+                    **{"from": FromAddress(address="worker@work.com")},
+                ),
+            },
+        )
+
+        result = runner.invoke(app, ["accounts"])
+        assert result.exit_code == 0
+        assert "personal" in result.stdout
+        assert "work" in result.stdout
+        assert "default" in result.stdout  # personal is marked as default
+
+    @patch("clerk.cli.get_config")
+    def test_accounts_list_json(self, mock_config):
+        from clerk.config import (
+            AccountConfig,
+            ClerkConfig,
+            FromAddress,
+            ImapConfig,
+            SmtpConfig,
+        )
+
+        mock_config.return_value = ClerkConfig(
+            default_account="test",
+            accounts={
+                "test": AccountConfig(
+                    protocol="imap",
+                    imap=ImapConfig(host="imap.ex.com", username="user"),
+                    smtp=SmtpConfig(host="smtp.ex.com", username="user"),
+                    **{"from": FromAddress(address="user@example.com")},
+                ),
+            },
+        )
+
+        result = runner.invoke(app, ["accounts", "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.stdout)
+        assert len(data) == 1
+        assert data[0]["name"] == "test"
+        assert data[0]["default"] is True
+
+    @patch("clerk.cli.save_config")
+    @patch("clerk.cli.save_password")
+    @patch("clerk.cli.load_config")
+    def test_accounts_add_imap(self, mock_load, mock_save_pass, mock_save_config):
+        from clerk.config import ClerkConfig
+
+        mock_load.return_value = ClerkConfig()
+
+        result = runner.invoke(
+            app,
+            ["accounts", "add", "test-account", "--protocol", "imap", "--email", "user@example.com"],
+            input="imap.example.com\n993\nuser@example.com\nsmtp.example.com\n587\nuser@example.com\nsecretpass\nTest User\n",
+        )
+
+        assert result.exit_code == 0
+        assert "added successfully" in result.stdout
+        mock_save_pass.assert_called_once()
+        mock_save_config.assert_called_once()
+
+    @patch("clerk.cli.load_config")
+    def test_accounts_add_duplicate(self, mock_load):
+        from clerk.config import (
+            AccountConfig,
+            ClerkConfig,
+            FromAddress,
+            ImapConfig,
+            SmtpConfig,
+        )
+
+        mock_load.return_value = ClerkConfig(
+            accounts={
+                "existing": AccountConfig(
+                    protocol="imap",
+                    imap=ImapConfig(host="imap.ex.com", username="user"),
+                    smtp=SmtpConfig(host="smtp.ex.com", username="user"),
+                    **{"from": FromAddress(address="user@ex.com")},
+                ),
+            },
+        )
+
+        result = runner.invoke(
+            app,
+            ["accounts", "add", "existing", "--email", "new@example.com"],
+        )
+
+        assert result.exit_code != 0
+        assert "already exists" in result.output
+
+    @patch("clerk.cli.get_config")
+    def test_accounts_test_not_found(self, mock_config):
+        from clerk.config import ClerkConfig
+
+        mock_config.return_value = ClerkConfig()
+
+        result = runner.invoke(app, ["accounts", "test", "nonexistent"])
+        assert result.exit_code != 0
+        assert "not found" in result.output
+
+    @patch("clerk.cli.save_config")
+    @patch("clerk.cli.delete_password")
+    @patch("clerk.cli.load_config")
+    def test_accounts_remove(self, mock_load, mock_delete_pass, mock_save):
+        from clerk.config import (
+            AccountConfig,
+            ClerkConfig,
+            FromAddress,
+            ImapConfig,
+            SmtpConfig,
+        )
+
+        mock_load.return_value = ClerkConfig(
+            default_account="test",
+            accounts={
+                "test": AccountConfig(
+                    protocol="imap",
+                    imap=ImapConfig(host="imap.ex.com", username="user"),
+                    smtp=SmtpConfig(host="smtp.ex.com", username="user"),
+                    **{"from": FromAddress(address="user@ex.com")},
+                ),
+            },
+        )
+
+        result = runner.invoke(app, ["accounts", "remove", "test", "--yes"])
+
+        assert result.exit_code == 0
+        assert "removed" in result.stdout
+        mock_delete_pass.assert_called_once_with("test")
+        mock_save.assert_called_once()
+
+    @patch("clerk.cli.load_config")
+    def test_accounts_remove_not_found(self, mock_load):
+        from clerk.config import ClerkConfig
+
+        mock_load.return_value = ClerkConfig()
+
+        result = runner.invoke(app, ["accounts", "remove", "nonexistent", "--yes"])
+        assert result.exit_code != 0
+        assert "not found" in result.output
+
+    @patch("clerk.cli.save_config")
+    @patch("clerk.cli.delete_password")
+    @patch("clerk.cli.load_config")
+    def test_accounts_remove_cancelled(self, mock_load, mock_delete, mock_save):
+        from clerk.config import (
+            AccountConfig,
+            ClerkConfig,
+            FromAddress,
+            ImapConfig,
+            SmtpConfig,
+        )
+
+        mock_load.return_value = ClerkConfig(
+            accounts={
+                "test": AccountConfig(
+                    protocol="imap",
+                    imap=ImapConfig(host="imap.ex.com", username="user"),
+                    smtp=SmtpConfig(host="smtp.ex.com", username="user"),
+                    **{"from": FromAddress(address="user@ex.com")},
+                ),
+            },
+        )
+
+        result = runner.invoke(app, ["accounts", "remove", "test"], input="n\n")
+
+        assert "Cancelled" in result.stdout
+        mock_delete.assert_not_called()
+        mock_save.assert_not_called()
+
+
+class TestHostGuessing:
+    def test_guess_imap_host_gmail(self):
+        from clerk.cli import _guess_imap_host
+
+        assert _guess_imap_host("user@gmail.com") == "imap.gmail.com"
+        assert _guess_imap_host("user@googlemail.com") == "imap.gmail.com"
+
+    def test_guess_imap_host_outlook(self):
+        from clerk.cli import _guess_imap_host
+
+        assert _guess_imap_host("user@outlook.com") == "outlook.office365.com"
+        assert _guess_imap_host("user@hotmail.com") == "outlook.office365.com"
+
+    def test_guess_imap_host_unknown(self):
+        from clerk.cli import _guess_imap_host
+
+        assert _guess_imap_host("user@custom-domain.org") == "imap.custom-domain.org"
+
+    def test_guess_smtp_host_gmail(self):
+        from clerk.cli import _guess_smtp_host
+
+        assert _guess_smtp_host("user@gmail.com") == "smtp.gmail.com"
+
+    def test_guess_smtp_host_unknown(self):
+        from clerk.cli import _guess_smtp_host
+
+        assert _guess_smtp_host("user@mydomain.com") == "smtp.mydomain.com"

@@ -216,6 +216,60 @@ def save_password(account_name: str, password: str) -> None:
     keyring.set_password("clerk", account_name, password)
 
 
+def delete_password(account_name: str) -> None:
+    """Delete password from system keyring."""
+    try:
+        keyring.delete_password("clerk", account_name)
+    except keyring.errors.PasswordDeleteError:
+        pass  # Password didn't exist
+
+
+def get_oauth_token(account_name: str) -> str | None:
+    """Retrieve OAuth token from keyring."""
+    try:
+        return keyring.get_password("clerk-oauth", account_name)
+    except Exception:
+        return None
+
+
+def save_oauth_token(account_name: str, token_json: str) -> None:
+    """Save OAuth token to keyring.
+
+    Args:
+        account_name: The account identifier
+        token_json: JSON-serialized credentials (from google.oauth2.credentials)
+    """
+    keyring.set_password("clerk-oauth", account_name, token_json)
+
+
+def delete_oauth_token(account_name: str) -> None:
+    """Delete OAuth token from keyring."""
+    try:
+        keyring.delete_password("clerk-oauth", account_name)
+    except keyring.errors.PasswordDeleteError:
+        pass  # Token didn't exist
+
+
+def save_config(config: ClerkConfig, config_path: Path | None = None) -> None:
+    """Save configuration to YAML file.
+
+    Args:
+        config: The configuration to save
+        config_path: Path to save to (defaults to standard config location)
+    """
+    if config_path is None:
+        config_path = get_config_dir() / "config.yaml"
+
+    # Ensure parent directory exists
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Convert to dict, handling the 'from' field alias
+    data = config.model_dump(by_alias=True, exclude_none=True)
+
+    with open(config_path, "w") as f:
+        yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+
+
 def ensure_dirs() -> None:
     """Ensure configuration and data directories exist."""
     get_config_dir().mkdir(parents=True, exist_ok=True)

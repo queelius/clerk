@@ -11,11 +11,25 @@ from rich.table import Table
 
 from . import __version__
 from .cache import get_cache
-from .config import ensure_dirs, get_config, load_config
+from .config import (
+    AccountConfig,
+    ClerkConfig,
+    FromAddress,
+    ImapConfig,
+    OAuthConfig,
+    SmtpConfig,
+    delete_oauth_token,
+    delete_password,
+    ensure_dirs,
+    get_config,
+    load_config,
+    save_config,
+    save_password,
+)
 from .drafts import get_draft_manager
-from .imap_client import get_imap_client
+from .imap_client import get_imap_client, ImapClient
 from .models import Address, ExitCode, MessageFlag
-from .smtp_client import check_send_allowed, format_draft_preview, send_draft
+from .smtp_client import check_send_allowed, format_draft_preview, send_draft, SmtpClient
 
 app = typer.Typer(
     name="clerk",
@@ -713,11 +727,63 @@ def status(
             console.print(f"[red]✗[/red] {name} - {info.get('error', 'Unknown error')}")
 
 
-@app.command()
-def accounts(
+# ============================================================================
+# Account Management Commands
+# ============================================================================
+
+accounts_app = typer.Typer(help="Account management commands")
+app.add_typer(accounts_app, name="accounts")
+
+
+def _guess_imap_host(email: str) -> str:
+    """Guess IMAP host from email domain."""
+    domain = email.split("@")[1].lower()
+    known_hosts = {
+        "gmail.com": "imap.gmail.com",
+        "googlemail.com": "imap.gmail.com",
+        "outlook.com": "outlook.office365.com",
+        "hotmail.com": "outlook.office365.com",
+        "live.com": "outlook.office365.com",
+        "yahoo.com": "imap.mail.yahoo.com",
+        "fastmail.com": "imap.fastmail.com",
+        "fastmail.fm": "imap.fastmail.com",
+        "icloud.com": "imap.mail.me.com",
+        "me.com": "imap.mail.me.com",
+        "protonmail.com": "127.0.0.1",  # ProtonMail Bridge
+        "proton.me": "127.0.0.1",
+    }
+    return known_hosts.get(domain, f"imap.{domain}")
+
+
+def _guess_smtp_host(email: str) -> str:
+    """Guess SMTP host from email domain."""
+    domain = email.split("@")[1].lower()
+    known_hosts = {
+        "gmail.com": "smtp.gmail.com",
+        "googlemail.com": "smtp.gmail.com",
+        "outlook.com": "smtp.office365.com",
+        "hotmail.com": "smtp.office365.com",
+        "live.com": "smtp.office365.com",
+        "yahoo.com": "smtp.mail.yahoo.com",
+        "fastmail.com": "smtp.fastmail.com",
+        "fastmail.fm": "smtp.fastmail.com",
+        "icloud.com": "smtp.mail.me.com",
+        "me.com": "smtp.mail.me.com",
+        "protonmail.com": "127.0.0.1",  # ProtonMail Bridge
+        "proton.me": "127.0.0.1",
+    }
+    return known_hosts.get(domain, f"smtp.{domain}")
+
+
+@accounts_app.callback(invoke_without_command=True)
+def accounts_list(
+    ctx: typer.Context,
     as_json: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
 ) -> None:
     """List configured accounts."""
+    if ctx.invoked_subcommand is not None:
+        return
+
     ensure_dirs()
     config = get_config()
 
@@ -743,6 +809,240 @@ def accounts(
         console.print(f"[bold]{name}[/bold]{default}")
         console.print(f"  Email: {acc.from_.address}")
         console.print(f"  Protocol: {acc.protocol}")
+
+
+@accounts_app.command(name="add")
+def accounts_add(
+    name: Annotated[str, typer.Argument(help="Account name")],
+    protocol: Annotated[str, typer.Option("--protocol", "-p", help="Protocol: imap or gmail")] = "imap",
+    email: Annotated[Optional[str], typer.Option("--email", "-e", help="Email address")] = None,
+    set_default: Annotated[bool, typer.Option("--default", help="Set as default account")] = False,
+) -> None:
+    """Add a new email account interactively."""
+    ensure_dirs()
+    config = load_config()
+
+    if name in config.accounts:
+        exit_with_code(ExitCode.INVALID_INPUT, f"Account '{name}' already exists")
+
+    if protocol not in ("imap", "gmail"):
+        exit_with_code(ExitCode.INVALID_INPUT, f"Unknown protocol: {protocol}. Use 'imap' or 'gmail'")
+
+    # Get email address
+    if not email:
+        email = typer.prompt("Email address")
+
+    # Validate email format (basic check)
+    if "@" not in email:
+        exit_with_code(ExitCode.INVALID_INPUT, f"Invalid email address: {email}")
+
+    console.print(f"\n[bold]Setting up {protocol.upper()} account: {name}[/bold]")
+    console.print(f"Email: {email}\n")
+
+    if protocol == "gmail":
+        account_config = _setup_gmail_account(name, email)
+    else:
+        account_config = _setup_imap_account(name, email)
+
+    # Add to config
+    config.accounts[name] = account_config
+
+    # Set as default if requested or if it's the first account
+    if set_default or not config.default_account:
+        config.default_account = name
+
+    # Save config
+    save_config(config)
+
+    console.print(f"\n[green]Account '{name}' added successfully![/green]")
+    if config.default_account == name:
+        console.print("[dim]Set as default account.[/dim]")
+
+
+def _setup_imap_account(name: str, email: str) -> AccountConfig:
+    """Set up an IMAP account interactively."""
+    # IMAP settings
+    imap_host = typer.prompt("IMAP host", default=_guess_imap_host(email))
+    imap_port = typer.prompt("IMAP port", default="993", show_default=True)
+    imap_username = typer.prompt("IMAP username", default=email)
+
+    # SMTP settings
+    smtp_host = typer.prompt("SMTP host", default=_guess_smtp_host(email))
+    smtp_port = typer.prompt("SMTP port", default="587", show_default=True)
+    smtp_username = typer.prompt("SMTP username", default=email)
+
+    # Password
+    password = typer.prompt("Password", hide_input=True)
+
+    # Store password in keyring
+    save_password(name, password)
+    console.print("[dim]Password saved to system keyring.[/dim]")
+
+    # Display name
+    display_name = typer.prompt("Display name (optional)", default="")
+
+    return AccountConfig(
+        protocol="imap",
+        imap=ImapConfig(
+            host=imap_host,
+            port=int(imap_port),
+            username=imap_username,
+        ),
+        smtp=SmtpConfig(
+            host=smtp_host,
+            port=int(smtp_port),
+            username=smtp_username,
+        ),
+        **{"from": FromAddress(address=email, name=display_name)},
+    )
+
+
+def _setup_gmail_account(name: str, email: str) -> AccountConfig:
+    """Set up a Gmail account with OAuth."""
+    from pathlib import Path
+
+    console.print("[bold]Gmail OAuth Setup[/bold]")
+    console.print(
+        "You'll need a Google Cloud OAuth client ID file.\n"
+        "Get one from: https://console.cloud.google.com/apis/credentials\n"
+    )
+
+    client_id_path = typer.prompt(
+        "Path to client_id.json",
+        default="~/.config/clerk/credentials.json",
+    )
+    client_id_file = Path(client_id_path).expanduser()
+
+    if not client_id_file.exists():
+        console.print(f"[yellow]Warning: File not found: {client_id_file}[/yellow]")
+        console.print("You can add it later and run 'clerk accounts test' to authenticate.")
+
+    # Display name
+    display_name = typer.prompt("Display name (optional)", default="")
+
+    # Create account config
+    account_config = AccountConfig(
+        protocol="gmail",
+        oauth=OAuthConfig(client_id_file=client_id_file),
+        **{"from": FromAddress(address=email, name=display_name)},
+    )
+
+    # Try to authenticate now if the file exists
+    if client_id_file.exists():
+        if typer.confirm("\nAuthenticate now?", default=True):
+            try:
+                from .oauth import run_oauth_flow
+
+                console.print("\n[dim]Opening browser for authentication...[/dim]")
+                run_oauth_flow(client_id_file, name)
+                console.print("[green]Authentication successful![/green]")
+            except Exception as e:
+                console.print(f"[yellow]Authentication failed: {e}[/yellow]")
+                console.print("You can try again later with 'clerk accounts test'.")
+
+    return account_config
+
+
+@accounts_app.command(name="test")
+def accounts_test(
+    name: Annotated[str, typer.Argument(help="Account name to test")],
+) -> None:
+    """Test account connectivity (IMAP and SMTP)."""
+    ensure_dirs()
+    config = get_config()
+
+    if name not in config.accounts:
+        exit_with_code(ExitCode.NOT_FOUND, f"Account '{name}' not found")
+
+    account_config = config.accounts[name]
+    console.print(f"[bold]Testing account: {name}[/bold]\n")
+
+    # Test IMAP
+    console.print("[dim]Testing IMAP connection...[/dim]")
+    try:
+        client = ImapClient(name, account_config)
+        client.connect()
+        folder_count = len(client.list_folders())
+        client.disconnect()
+        console.print(f"[green]IMAP: Connected ({folder_count} folders)[/green]")
+    except Exception as e:
+        console.print(f"[red]IMAP: Failed - {e}[/red]")
+
+    # Test SMTP (only for IMAP protocol, Gmail uses same OAuth)
+    if account_config.protocol == "imap":
+        console.print("[dim]Testing SMTP connection...[/dim]")
+        try:
+            import asyncio
+
+            smtp = account_config.smtp
+            if smtp:
+                password = account_config.get_password(name)
+
+                async def test_smtp() -> None:
+                    import aiosmtplib
+
+                    client = aiosmtplib.SMTP(
+                        hostname=smtp.host,
+                        port=smtp.port,
+                        start_tls=smtp.starttls,
+                    )
+                    await client.connect()
+                    await client.login(smtp.username, password)
+                    await client.quit()
+
+                asyncio.run(test_smtp())
+                console.print("[green]SMTP: Connected[/green]")
+            else:
+                console.print("[yellow]SMTP: Not configured[/yellow]")
+        except Exception as e:
+            console.print(f"[red]SMTP: Failed - {e}[/red]")
+    else:
+        console.print("[green]SMTP: Uses same OAuth credentials[/green]")
+
+    console.print("\n[bold]Test complete.[/bold]")
+
+
+@accounts_app.command(name="remove")
+def accounts_remove(
+    name: Annotated[str, typer.Argument(help="Account name to remove")],
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation")] = False,
+) -> None:
+    """Remove an account and its stored credentials."""
+    ensure_dirs()
+    config = load_config()
+
+    if name not in config.accounts:
+        exit_with_code(ExitCode.NOT_FOUND, f"Account '{name}' not found")
+
+    account_config = config.accounts[name]
+
+    if not yes:
+        console.print(f"[bold]Remove account: {name}[/bold]")
+        console.print(f"Email: {account_config.from_.address}")
+        console.print(f"Protocol: {account_config.protocol}")
+        console.print("\n[yellow]This will delete stored credentials.[/yellow]")
+
+        if not typer.confirm("Are you sure?"):
+            console.print("[dim]Cancelled.[/dim]")
+            raise typer.Exit(0)
+
+    # Delete credentials
+    if account_config.protocol == "gmail":
+        delete_oauth_token(name)
+    else:
+        delete_password(name)
+
+    # Remove from config
+    del config.accounts[name]
+
+    # Update default if needed
+    if config.default_account == name:
+        config.default_account = next(iter(config.accounts), "")
+
+    # Save config
+    save_config(config)
+
+    console.print(f"[green]Account '{name}' removed.[/green]")
 
 
 @app.command()

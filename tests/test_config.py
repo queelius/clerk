@@ -250,3 +250,178 @@ class TestLoadConfig:
         assert "personal" in config.accounts
         assert config.cache.window_days == 14
         assert config.send.rate_limit == 10
+
+
+class TestSaveConfig:
+    def test_save_config_creates_file(self, tmp_path):
+        """Test that save_config creates a new config file."""
+        from clerk.config import save_config
+
+        config = ClerkConfig(
+            default_account="test",
+            accounts={
+                "test": AccountConfig(
+                    protocol="imap",
+                    imap=ImapConfig(host="imap.example.com", username="user"),
+                    smtp=SmtpConfig(host="smtp.example.com", username="user"),
+                    **{"from": FromAddress(address="user@example.com", name="Test User")},
+                ),
+            },
+        )
+
+        config_path = tmp_path / "config.yaml"
+        save_config(config, config_path)
+
+        assert config_path.exists()
+
+        # Reload and verify
+        loaded = load_config(config_path)
+        assert loaded.default_account == "test"
+        assert "test" in loaded.accounts
+        assert loaded.accounts["test"].from_.address == "user@example.com"
+
+    def test_save_config_creates_parent_dirs(self, tmp_path):
+        """Test that save_config creates parent directories."""
+        from clerk.config import save_config
+
+        config = ClerkConfig()
+        config_path = tmp_path / "nested" / "dir" / "config.yaml"
+
+        save_config(config, config_path)
+
+        assert config_path.exists()
+
+    def test_save_config_preserves_structure(self, tmp_path):
+        """Test that config round-trips correctly."""
+        from clerk.config import save_config
+
+        original = ClerkConfig(
+            default_account="work",
+            accounts={
+                "work": AccountConfig(
+                    protocol="imap",
+                    imap=ImapConfig(host="imap.work.com", port=993, username="worker"),
+                    smtp=SmtpConfig(host="smtp.work.com", port=587, username="worker"),
+                    **{"from": FromAddress(address="me@work.com", name="Worker")},
+                ),
+            },
+            cache=CacheConfig(window_days=14),
+            send=SendConfig(rate_limit=50),
+        )
+
+        config_path = tmp_path / "config.yaml"
+        save_config(original, config_path)
+        loaded = load_config(config_path)
+
+        assert loaded.default_account == original.default_account
+        assert loaded.cache.window_days == 14
+        assert loaded.send.rate_limit == 50
+
+
+class TestOAuthTokenStorage:
+    @pytest.fixture
+    def mock_keyring(self, monkeypatch):
+        """Mock keyring for testing."""
+        storage = {}
+
+        def mock_get_password(service, username):
+            return storage.get(f"{service}:{username}")
+
+        def mock_set_password(service, username, password):
+            storage[f"{service}:{username}"] = password
+
+        def mock_delete_password(service, username):
+            key = f"{service}:{username}"
+            if key not in storage:
+                import keyring.errors
+
+                raise keyring.errors.PasswordDeleteError("Not found")
+            del storage[key]
+
+        import keyring
+
+        monkeypatch.setattr(keyring, "get_password", mock_get_password)
+        monkeypatch.setattr(keyring, "set_password", mock_set_password)
+        monkeypatch.setattr(keyring, "delete_password", mock_delete_password)
+
+        return storage
+
+    def test_save_and_get_oauth_token(self, mock_keyring):
+        """Test saving and retrieving OAuth tokens."""
+        from clerk.config import get_oauth_token, save_oauth_token
+
+        token_json = '{"token": "abc123", "refresh_token": "xyz789"}'
+        save_oauth_token("test-account", token_json)
+
+        result = get_oauth_token("test-account")
+        assert result == token_json
+
+    def test_get_oauth_token_not_found(self, mock_keyring):
+        """Test getting non-existent token returns None."""
+        from clerk.config import get_oauth_token
+
+        result = get_oauth_token("nonexistent")
+        assert result is None
+
+    def test_delete_oauth_token(self, mock_keyring):
+        """Test deleting OAuth token."""
+        from clerk.config import delete_oauth_token, get_oauth_token, save_oauth_token
+
+        save_oauth_token("test-account", '{"token": "test"}')
+        assert get_oauth_token("test-account") is not None
+
+        delete_oauth_token("test-account")
+        assert get_oauth_token("test-account") is None
+
+    def test_delete_oauth_token_not_found(self, mock_keyring):
+        """Test deleting non-existent token doesn't raise."""
+        from clerk.config import delete_oauth_token
+
+        # Should not raise
+        delete_oauth_token("nonexistent")
+
+
+class TestPasswordStorage:
+    @pytest.fixture
+    def mock_keyring(self, monkeypatch):
+        """Mock keyring for testing."""
+        storage = {}
+
+        def mock_get_password(service, username):
+            return storage.get(f"{service}:{username}")
+
+        def mock_set_password(service, username, password):
+            storage[f"{service}:{username}"] = password
+
+        def mock_delete_password(service, username):
+            key = f"{service}:{username}"
+            if key not in storage:
+                import keyring.errors
+
+                raise keyring.errors.PasswordDeleteError("Not found")
+            del storage[key]
+
+        import keyring
+
+        monkeypatch.setattr(keyring, "get_password", mock_get_password)
+        monkeypatch.setattr(keyring, "set_password", mock_set_password)
+        monkeypatch.setattr(keyring, "delete_password", mock_delete_password)
+
+        return storage
+
+    def test_delete_password(self, mock_keyring):
+        """Test deleting password from keyring."""
+        from clerk.config import delete_password, save_password
+
+        save_password("test-account", "secret123")
+        assert mock_keyring["clerk:test-account"] == "secret123"
+
+        delete_password("test-account")
+        assert "clerk:test-account" not in mock_keyring
+
+    def test_delete_password_not_found(self, mock_keyring):
+        """Test deleting non-existent password doesn't raise."""
+        from clerk.config import delete_password
+
+        # Should not raise
+        delete_password("nonexistent")
