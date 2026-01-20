@@ -5,7 +5,7 @@ import email.header
 import email.utils
 import hashlib
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from email.message import Message as EmailMessage
 from typing import Any
 
@@ -345,7 +345,7 @@ class ImapClient:
         fetch_data = self.client.fetch(message_ids, fetch_items)
 
         messages = []
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         for uid, data in fetch_data.items():
             try:
@@ -378,7 +378,7 @@ class ImapClient:
         if date:
             date = date.replace(tzinfo=None) if date.tzinfo else date
         else:
-            date = data.get(b"INTERNALDATE", datetime.utcnow())
+            date = data.get(b"INTERNALDATE", datetime.now(timezone.utc))
 
         subject = decode_header_value(envelope.subject) if envelope.subject else ""
 
@@ -486,6 +486,57 @@ class ImapClient:
 
         email_msg = email.message_from_bytes(raw)
         return extract_body(email_msg)
+
+    def fetch_attachment(self, folder: str, message_id: str, filename: str) -> bytes:
+        """Fetch a specific attachment from a message.
+
+        Args:
+            folder: Folder containing the message
+            message_id: Message ID
+            filename: Attachment filename to fetch
+
+        Returns:
+            Attachment content as bytes
+
+        Raises:
+            FileNotFoundError: If message or attachment not found
+        """
+        self.client.select_folder(folder, readonly=True)
+
+        # Search for the message by Message-ID header
+        results = self.client.search(["HEADER", "Message-ID", message_id])
+
+        if not results:
+            raise FileNotFoundError(f"Message not found: {message_id}")
+
+        uid = results[0]
+        fetch_data = self.client.fetch([uid], ["BODY.PEEK[]"])
+
+        if uid not in fetch_data:
+            raise FileNotFoundError(f"Message not found: {message_id}")
+
+        raw = fetch_data[uid].get(b"BODY[]")
+        if not raw:
+            raise FileNotFoundError(f"Message body not found: {message_id}")
+
+        email_msg = email.message_from_bytes(raw)
+
+        # Find the attachment by filename
+        for part in email_msg.walk():
+            content_disp = str(part.get("Content-Disposition", ""))
+            if "attachment" not in content_disp:
+                continue
+
+            part_filename = part.get_filename()
+            if part_filename:
+                # Decode filename if needed
+                decoded_filename = decode_header_value(part_filename)
+                if decoded_filename == filename:
+                    payload = part.get_payload(decode=True)
+                    if payload:
+                        return payload
+
+        raise FileNotFoundError(f"Attachment not found: {filename}")
 
     def set_flags(self, folder: str, message_id: str, flags: list[MessageFlag]) -> None:
         """Set flags on a message."""

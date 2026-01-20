@@ -4,13 +4,20 @@ build-backend = "hatchling.build"
 
 [project]
 name = "clerk"
-version = "0.2.0"
+version = "0.4.0"
 description = "A thin CLI for LLM agents to interact with email via IMAP/SMTP"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
 authors = [{ name = "spinoza" }]
 keywords = ["email", "imap", "smtp", "cli", "llm", "agent"]
+
+[project.urls]
+Homepage = "https://github.com/spinoza/clerk"
+Repository = "https://github.com/spinoza/clerk.git"
+Issues = "https://github.com/spinoza/clerk/issues"
+Changelog = "https://github.com/spinoza/clerk/blob/main/CHANGELOG.md"
+
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
@@ -32,6 +39,8 @@ dependencies = [
     "pyyaml>=6.0.0",
     "google-auth>=2.0.0",
     "google-auth-oauthlib>=1.0.0",
+    "mcp>=1.7.0,<2",
+    "prompt-toolkit>=3.0.0",
 ]
 
 [project.optional-dependencies]

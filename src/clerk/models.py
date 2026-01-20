@@ -1,6 +1,6 @@
 """Core data models for clerk."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Annotated
 
@@ -129,8 +129,8 @@ class Draft(BaseModel):
     in_reply_to: str | None = Field(default=None, description="Message-ID being replied to")
     references: list[str] = Field(default_factory=list, description="Reference chain")
 
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class UnreadCounts(BaseModel):
@@ -168,7 +168,7 @@ class SendResult(BaseModel):
     success: bool
     message_id: str | None = None
     error: str | None = None
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 # Exit codes as per spec

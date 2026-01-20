@@ -554,24 +554,39 @@ See [Cache Accelerator](#cache-accelerator) for detailed design. Key points:
 
 ## Roadmap
 
-### v0.1 - Core
-- [ ] IMAP connect/fetch (imapclient)
-- [ ] SQLite cache with FTS5
-- [ ] Conversation threading
-- [ ] JSON output for all commands
-- [ ] Draft creation with reply headers
-- [ ] SMTP send with confirmation
+### v0.1 - Core (Complete)
+- [x] IMAP connect/fetch (imapclient)
+- [x] SQLite cache with FTS5
+- [x] Conversation threading
+- [x] JSON output for all commands
+- [x] Draft creation with reply headers
+- [x] SMTP send with confirmation
 
-### v0.2 - Accounts & Polish
-- [ ] Multiple accounts
-- [ ] Gmail OAuth flow
-- [ ] Keyring integration
-- [ ] Cache management commands
+### v0.2 - Accounts & Polish (Complete)
+- [x] Multiple accounts
+- [x] Gmail OAuth flow
+- [x] Keyring integration
+- [x] Cache management commands
 
-### v0.3 - MCP
-- [ ] MCP server implementation
-- [ ] Resource endpoints
-- [ ] Tool confirmation flows
+### v0.3 - MCP (Complete)
+- [x] MCP server implementation
+- [x] Resource endpoints
+- [x] Tool confirmation flows
+
+### v0.4 - API Layer & Advanced Features (Complete)
+- [x] ClerkAPI - centralized business logic layer
+- [x] Advanced search parser with operators (from:, to:, subject:, body:, has:, is:, after:, before:, date:)
+- [x] Raw SQL search for power users
+- [x] Interactive shell with tab completion
+- [x] Attachment download support
+- [x] Integration tests with Greenmail
+- [x] MCP tools: clerk_search_sql, clerk_attachments
+
+### v0.5 - Future
+- [ ] Batch operations
+- [ ] Email rules/filters
+- [ ] Calendar integration
+- [ ] Contact management
 
 ---
 

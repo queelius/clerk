@@ -1,7 +1,7 @@
 """Tests for clerk CLI."""
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -257,7 +257,7 @@ class TestInboxCommand:
                 participants=["alice@ex.com"],
                 message_count=3,
                 unread_count=1,
-                latest_date=datetime.utcnow(),
+                latest_date=datetime.now(timezone.utc),
                 snippet="Hello...",
             ),
         ]
@@ -324,9 +324,9 @@ class TestSearchCommand:
                 account="test",
                 folder="INBOX",
                 **{"from": Address(addr="sender@ex.com")},
-                date=datetime.utcnow(),
+                date=datetime.now(timezone.utc),
                 subject="Found message",
-                headers_fetched_at=datetime.utcnow(),
+                headers_fetched_at=datetime.now(timezone.utc),
             ),
         ]
         mock_cache.return_value = cache_instance

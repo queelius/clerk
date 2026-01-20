@@ -1051,5 +1051,210 @@ def version() -> None:
     console.print(f"clerk {__version__}")
 
 
+@app.command(name="mcp-server")
+def mcp_server() -> None:
+    """Start the MCP (Model Context Protocol) server for LLM integration.
+
+    This starts a stdio-based MCP server that allows LLM agents to interact
+    with email through structured tool calls.
+
+    Example Claude Desktop configuration:
+    {
+        "mcpServers": {
+            "clerk": {
+                "command": "clerk",
+                "args": ["mcp-server"]
+            }
+        }
+    }
+    """
+    from .mcp_server import run_server
+
+    run_server()
+
+
+@app.command()
+def shell() -> None:
+    """Start an interactive shell/REPL.
+
+    Provides a readline-like experience with:
+    - Command history (persisted)
+    - Tab completion for commands and options
+    - All CLI commands available
+    - Extra: sql command for raw queries
+
+    Example:
+        clerk shell
+        clerk> inbox --limit 5
+        clerk> search from:alice subject:meeting
+        clerk> sql SELECT * FROM messages LIMIT 5
+        clerk> exit
+    """
+    from .shell import run_shell
+
+    run_shell()
+
+
+@app.command()
+def attachment(
+    message_id: Annotated[str, typer.Argument(help="Message ID")],
+    filename: Annotated[Optional[str], typer.Argument(help="Attachment filename")] = None,
+    save: Annotated[Optional[str], typer.Option("--save", "-s", help="Save to path")] = None,
+    list_only: Annotated[bool, typer.Option("--list", "-l", help="List attachments only")] = False,
+    account: Annotated[Optional[str], typer.Option("--account", "-a", help="Account name")] = None,
+) -> None:
+    """Download or list attachments from a message.
+
+    Examples:
+        clerk attachment <msg-id> --list
+        clerk attachment <msg-id> document.pdf --save ./downloads/
+    """
+    ensure_dirs()
+    from .api import get_api
+
+    api = get_api()
+
+    if list_only or filename is None:
+        # List attachments
+        attachments = api.list_attachments(message_id)
+
+        if not attachments:
+            msg = api.get_message(message_id)
+            if not msg:
+                exit_with_code(ExitCode.NOT_FOUND, f"Message not found: {message_id}")
+            console.print("[dim]No attachments.[/dim]")
+            return
+
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("Filename", width=40)
+        table.add_column("Size", justify="right", width=12)
+        table.add_column("Type", width=30)
+
+        for att in attachments:
+            size_kb = att.get("size", 0) / 1024
+            table.add_row(
+                att.get("filename", "unknown"),
+                f"{size_kb:.1f} KB",
+                att.get("content_type", "unknown"),
+            )
+
+        console.print(table)
+        return
+
+    # Download attachment
+    if not save:
+        save = "."
+
+    try:
+        from pathlib import Path
+
+        dest = api.download_attachment(message_id, filename, Path(save))
+        console.print(f"[green]Saved to:[/green] {dest}")
+    except FileNotFoundError as e:
+        exit_with_code(ExitCode.NOT_FOUND, str(e))
+
+
+@app.command(name="search-sql")
+def search_sql(
+    query: Annotated[str, typer.Argument(help="SQL SELECT query")],
+    limit: Annotated[int, typer.Option("--limit", "-n", help="Max results")] = 100,
+    as_json: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
+) -> None:
+    """Execute a raw SQL query on the messages table.
+
+    Only SELECT queries are allowed. Use this for complex queries that
+    can't be expressed with the regular search operators.
+
+    Examples:
+        clerk search-sql "SELECT * FROM messages WHERE from_addr LIKE '%alice%'"
+        clerk search-sql "SELECT * FROM messages ORDER BY date_utc DESC LIMIT 10"
+    """
+    ensure_dirs()
+    from .api import get_api
+
+    api = get_api()
+
+    try:
+        messages = api.search_sql(query, limit=limit)
+    except ValueError as e:
+        exit_with_code(ExitCode.INVALID_INPUT, str(e))
+
+    if as_json:
+        output_json([m.model_dump() for m in messages])
+        return
+
+    if not messages:
+        console.print("[dim]No results found.[/dim]")
+        return
+
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("ID", style="dim", width=12)
+    table.add_column("From", width=25)
+    table.add_column("Subject", width=40)
+    table.add_column("Date", width=12)
+
+    for msg in messages:
+        table.add_row(
+            msg.conv_id,
+            msg.from_.addr[:25] if msg.from_ else "",
+            msg.subject[:40] if msg.subject else "",
+            msg.date.strftime("%b %d") if msg.date else "",
+        )
+
+    console.print(table)
+
+
+@app.command(name="search-advanced")
+def search_advanced(
+    query: Annotated[str, typer.Argument(help="Search query with operators")],
+    limit: Annotated[int, typer.Option("--limit", "-n", help="Max results")] = 20,
+    account: Annotated[Optional[str], typer.Option("--account", "-a", help="Account name")] = None,
+    as_json: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
+) -> None:
+    """Advanced search with operator support.
+
+    Supports operators like:
+    - from:alice, to:bob
+    - subject:meeting, body:quarterly
+    - has:attachment
+    - is:unread, is:read, is:flagged
+    - after:2025-01-01, before:2025-12-31, date:2025-06-15
+
+    Examples:
+        clerk search-advanced "from:alice has:attachment after:2025-01-01"
+        clerk search-advanced "is:unread subject:urgent" --json
+    """
+    ensure_dirs()
+    from .api import get_api
+
+    api = get_api()
+
+    result = api.search_advanced(query, account=account, limit=limit)
+
+    if as_json:
+        output_json([m.model_dump() for m in result.messages])
+        return
+
+    if not result.messages:
+        console.print("[dim]No results found.[/dim]")
+        return
+
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("ID", style="dim", width=12)
+    table.add_column("From", width=25)
+    table.add_column("Subject", width=40)
+    table.add_column("Date", width=12)
+
+    for msg in result.messages:
+        table.add_row(
+            msg.conv_id,
+            msg.from_.addr[:25] if msg.from_ else "",
+            msg.subject[:40] if msg.subject else "",
+            msg.date.strftime("%b %d") if msg.date else "",
+        )
+
+    console.print(table)
+
+
 if __name__ == "__main__":
     app()

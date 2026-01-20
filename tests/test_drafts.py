@@ -1,7 +1,7 @@
 """Tests for draft management."""
 
 import tempfile
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -78,10 +78,10 @@ class TestDraftManager:
             folder="INBOX",
             **{"from": Address(addr="sender@example.com", name="Sender")},
             to=[Address(addr="me@example.com")],
-            date=datetime.utcnow(),
+            date=datetime.now(timezone.utc),
             subject="Original Subject",
             body_text="Original body",
-            headers_fetched_at=datetime.utcnow(),
+            headers_fetched_at=datetime.now(timezone.utc),
         )
         draft_manager.cache.store_message(msg)
 

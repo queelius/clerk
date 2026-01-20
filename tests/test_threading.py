@@ -1,6 +1,6 @@
 """Tests for conversation threading."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 
@@ -30,12 +30,12 @@ def make_message(
         account="test",
         folder="INBOX",
         **{"from": Address(addr=from_addr)},
-        date=date or datetime.utcnow(),
+        date=date or datetime.now(timezone.utc),
         subject=subject,
         in_reply_to=in_reply_to,
         references=references or [],
         flags=flags or [],
-        headers_fetched_at=datetime.utcnow(),
+        headers_fetched_at=datetime.now(timezone.utc),
     )
 
 

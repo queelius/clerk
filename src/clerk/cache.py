@@ -3,11 +3,12 @@
 import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
 from .config import get_config, get_data_dir
+from .search import SearchQuery, build_fts_query, build_where_clauses, parse_search_query
 from .models import (
     Address,
     Attachment,
@@ -209,7 +210,7 @@ class Cache:
                     json.dumps([a.model_dump() for a in msg.attachments]),
                     msg.in_reply_to,
                     json.dumps(msg.references),
-                    (msg.headers_fetched_at or datetime.utcnow()).isoformat(),
+                    (msg.headers_fetched_at or datetime.now(timezone.utc)).isoformat(),
                     msg.body_fetched_at.isoformat() if msg.body_fetched_at else None,
                 ),
             )
@@ -351,6 +352,132 @@ class Cache:
 
             return [self._row_to_message(row) for row in rows]
 
+    def search_advanced(
+        self,
+        query: str | SearchQuery,
+        account: str | None = None,
+        folder: str | None = None,
+        limit: int = 20,
+    ) -> list[Message]:
+        """Advanced search with support for operators.
+
+        Supports operators like:
+        - from:alice, to:bob
+        - subject:meeting, body:quarterly
+        - has:attachment
+        - is:unread, is:read, is:flagged
+        - after:2025-01-01, before:2025-12-31, date:2025-06-15
+
+        Args:
+            query: Search query string or pre-parsed SearchQuery object
+            account: Filter by account (optional)
+            folder: Filter by folder (optional)
+            limit: Maximum results to return
+
+        Returns:
+            List of matching messages
+        """
+        # Parse query if it's a string
+        if isinstance(query, str):
+            parsed = parse_search_query(query)
+        else:
+            parsed = query
+
+        with self._connect() as conn:
+            # Build FTS query for text-based searches
+            fts_query = build_fts_query(parsed)
+            use_fts = fts_query != "*"
+
+            # Build WHERE clauses for non-FTS filters
+            where_clauses, where_params = build_where_clauses(parsed)
+
+            # Add account filter if specified
+            if account:
+                where_clauses.append("m.account = ?")
+                where_params.append(account)
+
+            # Add folder filter if specified
+            if folder:
+                where_clauses.append("m.folder = ?")
+                where_params.append(folder)
+
+            # Build the SQL query
+            if use_fts:
+                # Use FTS join
+                sql = """
+                    SELECT m.* FROM messages m
+                    JOIN messages_fts ON m.rowid = messages_fts.rowid
+                    WHERE messages_fts MATCH ?
+                """
+                params: list[Any] = [fts_query]
+
+                if where_clauses:
+                    sql += " AND " + " AND ".join(where_clauses)
+                    params.extend(where_params)
+
+                sql += " ORDER BY rank LIMIT ?"
+                params.append(limit)
+            else:
+                # No FTS needed, just filter by WHERE clauses
+                sql = "SELECT * FROM messages m"
+
+                if where_clauses:
+                    sql += " WHERE " + " AND ".join(where_clauses)
+                    params = list(where_params)
+                else:
+                    params = []
+
+                sql += " ORDER BY date_utc DESC LIMIT ?"
+                params.append(limit)
+
+            rows = conn.execute(sql, params).fetchall()
+            return [self._row_to_message(row) for row in rows]
+
+    def execute_raw_query(
+        self,
+        sql: str,
+        params: tuple | list | None = None,
+        limit: int = 100,
+    ) -> list[Message]:
+        """Execute a raw SQL SELECT query on the messages table.
+
+        This is for power users who need custom queries. Only SELECT
+        statements are allowed for safety.
+
+        Args:
+            sql: SQL query (must be SELECT)
+            params: Query parameters (optional)
+            limit: Maximum results (enforced even if not in query)
+
+        Returns:
+            List of messages matching the query
+
+        Raises:
+            ValueError: If query is not a SELECT statement
+        """
+        # Safety check: only allow SELECT
+        sql_upper = sql.strip().upper()
+        if not sql_upper.startswith("SELECT"):
+            raise ValueError("Only SELECT queries are allowed")
+
+        # Disallow dangerous keywords
+        dangerous = ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "TRUNCATE"]
+        for keyword in dangerous:
+            if keyword in sql_upper:
+                raise ValueError(f"Query contains disallowed keyword: {keyword}")
+
+        with self._connect() as conn:
+            # Add LIMIT if not present
+            if "LIMIT" not in sql_upper:
+                sql = f"{sql.rstrip(';')} LIMIT {limit}"
+
+            if params:
+                rows = conn.execute(sql, params).fetchall()
+            else:
+                rows = conn.execute(sql).fetchall()
+
+            return [self._row_to_message(row) for row in rows]
+
     def update_flags(self, message_id: str, flags: list[MessageFlag]) -> None:
         """Update message flags."""
         with self._connect() as conn:
@@ -370,7 +497,7 @@ class Cache:
                 SET body_text = ?, body_html = ?, body_fetched_at = ?
                 WHERE message_id = ?
                 """,
-                (body_text, body_html, datetime.utcnow().isoformat(), message_id),
+                (body_text, body_html, datetime.now(timezone.utc).isoformat(), message_id),
             )
 
     def move_message(self, message_id: str, folder: str) -> None:
@@ -408,7 +535,7 @@ class Cache:
                     return False
                 fetched_at = datetime.fromisoformat(row["headers_fetched_at"])
 
-            return datetime.utcnow() - fetched_at < timedelta(minutes=freshness_minutes)
+            return datetime.now(timezone.utc) - fetched_at < timedelta(minutes=freshness_minutes)
 
     def is_inbox_fresh(self, account: str, freshness_minutes: int = 5) -> bool:
         """Check if inbox listing is fresh enough."""
@@ -420,19 +547,19 @@ class Cache:
             if not row:
                 return False
             synced_at = datetime.fromisoformat(row["value"])
-            return datetime.utcnow() - synced_at < timedelta(minutes=freshness_minutes)
+            return datetime.now(timezone.utc) - synced_at < timedelta(minutes=freshness_minutes)
 
     def mark_inbox_synced(self, account: str) -> None:
         """Mark inbox as synced."""
         with self._connect() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO cache_meta (key, value) VALUES (?, ?)",
-                (f"inbox_sync_{account}", datetime.utcnow().isoformat()),
+                (f"inbox_sync_{account}", datetime.now(timezone.utc).isoformat()),
             )
 
     def prune_old_messages(self, window_days: int = 7) -> int:
         """Remove messages older than the cache window. Returns count deleted."""
-        cutoff = datetime.utcnow() - timedelta(days=window_days)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=window_days)
         with self._connect() as conn:
             cursor = conn.execute(
                 "DELETE FROM messages WHERE date_utc < ?", (cutoff.isoformat(),)
@@ -496,7 +623,7 @@ class Cache:
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    datetime.utcnow().isoformat(),
+                    datetime.now(timezone.utc).isoformat(),
                     account,
                     json.dumps([a.model_dump() for a in to]),
                     json.dumps([a.model_dump() for a in cc]),

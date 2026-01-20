@@ -1,6 +1,6 @@
 """Tests for clerk models."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 
@@ -53,7 +53,7 @@ class TestMessage:
             message_id="<test@example.com>",
             conv_id="conv1",
             **{"from": Address(addr="a@b.com")},
-            date=datetime.utcnow(),
+            date=datetime.now(timezone.utc),
             flags=[MessageFlag.SEEN],
         )
         assert msg.is_read is True
@@ -62,7 +62,7 @@ class TestMessage:
             message_id="<test2@example.com>",
             conv_id="conv1",
             **{"from": Address(addr="a@b.com")},
-            date=datetime.utcnow(),
+            date=datetime.now(timezone.utc),
             flags=[],
         )
         assert msg2.is_read is False
@@ -72,7 +72,7 @@ class TestMessage:
             message_id="<test@example.com>",
             conv_id="conv1",
             **{"from": Address(addr="a@b.com")},
-            date=datetime.utcnow(),
+            date=datetime.now(timezone.utc),
             flags=[MessageFlag.FLAGGED],
         )
         assert msg.is_flagged is True
@@ -119,7 +119,7 @@ class TestConversation:
             participants=[],
             message_count=1,
             unread_count=0,
-            latest_date=datetime.utcnow(),
+            latest_date=datetime.now(timezone.utc),
         )
         assert conv.has_unread is False
 
