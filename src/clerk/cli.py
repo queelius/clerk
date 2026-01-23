@@ -1071,6 +1071,89 @@ def accounts_remove(
     console.print(f"[green]Account '{name}' removed.[/green]")
 
 
+# ============================================================================
+# Skill Management Commands
+# ============================================================================
+
+skill_app = typer.Typer(help="Manage Claude Code skill")
+app.add_typer(skill_app, name="skill")
+
+
+@skill_app.command(name="install")
+def skill_install(
+    local: Annotated[bool, typer.Option("--local", "-l", help="Install to current directory instead of global")] = False,
+) -> None:
+    """Install clerk skill for Claude Code.
+
+    By default, installs to ~/.claude/skills/clerk/ (global).
+    Use --local to install to .claude/skills/clerk/ in the current directory.
+    """
+    from .skill import install_skill
+
+    path = install_skill(local=local)
+    location = "local" if local else "global"
+    console.print(f"[green]Skill installed ({location}):[/green] {path}")
+
+
+@skill_app.command(name="uninstall")
+def skill_uninstall(
+    local: Annotated[bool, typer.Option("--local", "-l", help="Uninstall from current directory instead of global")] = False,
+) -> None:
+    """Remove clerk skill.
+
+    By default, removes from ~/.claude/skills/clerk/ (global).
+    Use --local to remove from .claude/skills/clerk/ in the current directory.
+    """
+    from .skill import uninstall_skill
+
+    if uninstall_skill(local=local):
+        location = "local" if local else "global"
+        console.print(f"[green]Skill uninstalled ({location}).[/green]")
+    else:
+        location = "locally" if local else "globally"
+        console.print(f"[yellow]Skill not installed {location}.[/yellow]")
+
+
+@skill_app.command(name="status")
+def skill_status(
+    as_json: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
+) -> None:
+    """Show skill installation status."""
+    from .skill import get_skill_status
+
+    status = get_skill_status()
+
+    if as_json:
+        output_json({
+            "global": {
+                "installed": status.global_installed,
+                "path": str(status.global_path) if status.global_path else None,
+            },
+            "local": {
+                "installed": status.local_installed,
+                "path": str(status.local_path) if status.local_path else None,
+            },
+        })
+        return
+
+    console.print("[bold]Skill Installation Status[/bold]")
+    console.print()
+
+    if status.global_installed:
+        console.print(f"[green]Global:[/green] Installed at {status.global_path}")
+    else:
+        console.print("[dim]Global:[/dim] Not installed")
+
+    if status.local_installed:
+        console.print(f"[green]Local:[/green] Installed at {status.local_path}")
+    else:
+        console.print("[dim]Local:[/dim] Not installed")
+
+    if not status.global_installed and not status.local_installed:
+        console.print()
+        console.print("[dim]Run 'clerk skill install' to install.[/dim]")
+
+
 @app.command()
 def version() -> None:
     """Show version information."""

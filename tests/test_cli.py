@@ -620,3 +620,115 @@ class TestHostGuessing:
         from clerk.cli import _guess_smtp_host
 
         assert _guess_smtp_host("user@mydomain.com") == "smtp.mydomain.com"
+
+
+class TestSkillCommands:
+    def test_skill_install_global(self, tmp_path, monkeypatch):
+        """Test installing skill globally."""
+        # Mock home directory to avoid modifying real ~/.claude
+        monkeypatch.setattr("clerk.skill.Path.home", lambda: tmp_path)
+
+        result = runner.invoke(app, ["skill", "install"])
+        assert result.exit_code == 0
+        assert "installed" in result.stdout.lower()
+        assert "global" in result.stdout.lower()
+
+        # Verify file was created
+        skill_file = tmp_path / ".claude" / "skills" / "clerk" / "SKILL.md"
+        assert skill_file.exists()
+        content = skill_file.read_text()
+        assert "clerk" in content
+        assert "Email CLI for LLM Agents" in content
+
+    def test_skill_install_local(self, tmp_path, monkeypatch):
+        """Test installing skill locally."""
+        # Mock cwd to use temp directory
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, ["skill", "install", "--local"])
+        assert result.exit_code == 0
+        assert "installed" in result.stdout.lower()
+        assert "local" in result.stdout.lower()
+
+        # Verify file was created
+        skill_file = tmp_path / ".claude" / "skills" / "clerk" / "SKILL.md"
+        assert skill_file.exists()
+
+    def test_skill_uninstall_global(self, tmp_path, monkeypatch):
+        """Test uninstalling skill globally."""
+        monkeypatch.setattr("clerk.skill.Path.home", lambda: tmp_path)
+
+        # First install
+        runner.invoke(app, ["skill", "install"])
+        skill_file = tmp_path / ".claude" / "skills" / "clerk" / "SKILL.md"
+        assert skill_file.exists()
+
+        # Then uninstall
+        result = runner.invoke(app, ["skill", "uninstall"])
+        assert result.exit_code == 0
+        assert "uninstalled" in result.stdout.lower()
+        assert not skill_file.exists()
+
+    def test_skill_uninstall_not_installed(self, tmp_path, monkeypatch):
+        """Test uninstalling when skill is not installed."""
+        monkeypatch.setattr("clerk.skill.Path.home", lambda: tmp_path)
+
+        result = runner.invoke(app, ["skill", "uninstall"])
+        assert result.exit_code == 0
+        assert "not installed" in result.stdout.lower()
+
+    def test_skill_status_not_installed(self, tmp_path, monkeypatch):
+        """Test status when skill is not installed."""
+        monkeypatch.setattr("clerk.skill.Path.home", lambda: tmp_path)
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, ["skill", "status"])
+        assert result.exit_code == 0
+        assert "Not installed" in result.stdout
+
+    def test_skill_status_global_installed(self, tmp_path, monkeypatch):
+        """Test status when skill is installed globally."""
+        monkeypatch.setattr("clerk.skill.Path.home", lambda: tmp_path)
+        monkeypatch.chdir(tmp_path)
+
+        # Install globally
+        runner.invoke(app, ["skill", "install"])
+
+        result = runner.invoke(app, ["skill", "status"])
+        assert result.exit_code == 0
+        assert "Global" in result.stdout
+        assert "Installed" in result.stdout
+
+    def test_skill_status_local_installed(self, tmp_path, monkeypatch):
+        """Test status when skill is installed locally."""
+        monkeypatch.setattr("clerk.skill.Path.home", lambda: tmp_path)
+        monkeypatch.chdir(tmp_path)
+
+        # Install locally
+        runner.invoke(app, ["skill", "install", "--local"])
+
+        result = runner.invoke(app, ["skill", "status"])
+        assert result.exit_code == 0
+        assert "Local" in result.stdout
+        assert "Installed" in result.stdout
+
+    def test_skill_status_json(self, tmp_path, monkeypatch):
+        """Test status with JSON output."""
+        # Use different paths for global and local
+        global_home = tmp_path / "home"
+        local_dir = tmp_path / "project"
+        global_home.mkdir()
+        local_dir.mkdir()
+
+        monkeypatch.setattr("clerk.skill.Path.home", lambda: global_home)
+        monkeypatch.chdir(local_dir)
+
+        # Install globally
+        runner.invoke(app, ["skill", "install"])
+
+        result = runner.invoke(app, ["skill", "status", "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.stdout)
+        assert data["global"]["installed"] is True
+        assert data["local"]["installed"] is False
+        assert ".claude/skills/clerk" in data["global"]["path"]
