@@ -1,0 +1,65 @@
+# Demo configuration for clerk
+# Uses local Greenmail mock email server
+
+default_account: demo
+
+accounts:
+  demo:
+    protocol: imap
+    password_cmd: "echo demo"
+    imap:
+      host: localhost
+      port: 3143
+      username: demo
+      ssl: false
+    smtp:
+      host: localhost
+      port: 3025
+      username: demo
+      starttls: false
+    from:
+      address: demo@example.com
+      name: Demo User
+
+  alice:
+    protocol: imap
+    password_cmd: "echo alice"
+    imap:
+      host: localhost
+      port: 3143
+      username: alice
+      ssl: false
+    smtp:
+      host: localhost
+      port: 3025
+      username: alice
+      starttls: false
+    from:
+      address: alice@example.com
+      name: Alice
+
+  bob:
+    protocol: imap
+    password_cmd: "echo bob"
+    imap:
+      host: localhost
+      port: 3143
+      username: bob
+      ssl: false
+    smtp:
+      host: localhost
+      port: 3025
+      username: bob
+      starttls: false
+    from:
+      address: bob@example.com
+      name: Bob
+
+cache:
+  window_days: 7
+  inbox_freshness_min: 1
+  body_freshness_min: 5
+
+send:
+  require_confirmation: true
+  rate_limit: 100
