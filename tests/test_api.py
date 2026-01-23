@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from clerk.api import ClerkAPI, InboxResult, SearchResult, get_api
+from clerk.api import ClerkAPI, ConversationLookupResult, InboxResult, SearchResult, get_api
 from clerk.cache import Cache
 from clerk.config import AccountConfig, ClerkConfig, FromAddress, ImapConfig, SmtpConfig
 from clerk.drafts import DraftManager
@@ -334,6 +334,106 @@ class TestCacheOperations:
 
         stats = api.get_cache_stats()
         assert stats.message_count == 0
+
+
+class TestResolveConversationId:
+    """Tests for resolve_conversation_id method."""
+
+    def test_resolve_unique_prefix(self, api, cache):
+        """Test resolving a unique prefix returns the conversation."""
+        msg = Message(
+            message_id="<msg1@example.com>",
+            conv_id="abc123def456",
+            account="test",
+            folder="INBOX",
+            **{"from": Address(addr="alice@example.com")},
+            date=datetime.now(timezone.utc),
+            subject="Test Subject",
+            body_text="Body text",
+            headers_fetched_at=datetime.now(timezone.utc),
+            body_fetched_at=datetime.now(timezone.utc),
+        )
+        cache.store_message(msg)
+
+        result = api.resolve_conversation_id("abc")
+
+        assert result.conversation is not None
+        assert result.conversation.conv_id == "abc123def456"
+        assert result.matches is None
+        assert result.error is None
+
+    def test_resolve_ambiguous_prefix(self, api, cache):
+        """Test resolving an ambiguous prefix returns matches."""
+        msg1 = Message(
+            message_id="<msg1@example.com>",
+            conv_id="abc123xxx",
+            account="test",
+            folder="INBOX",
+            **{"from": Address(addr="alice@example.com")},
+            date=datetime(2025, 1, 1, 10, 0, 0, tzinfo=timezone.utc),
+            subject="First Subject",
+            headers_fetched_at=datetime.now(timezone.utc),
+        )
+        msg2 = Message(
+            message_id="<msg2@example.com>",
+            conv_id="abc456yyy",
+            account="test",
+            folder="INBOX",
+            **{"from": Address(addr="bob@example.com")},
+            date=datetime(2025, 1, 2, 10, 0, 0, tzinfo=timezone.utc),
+            subject="Second Subject",
+            headers_fetched_at=datetime.now(timezone.utc),
+        )
+        cache.store_message(msg1)
+        cache.store_message(msg2)
+
+        result = api.resolve_conversation_id("abc")
+
+        assert result.conversation is None
+        assert result.matches is not None
+        assert len(result.matches) == 2
+        assert result.error is None
+
+    def test_resolve_no_match(self, api, cache):
+        """Test resolving a prefix with no matches returns error."""
+        msg = Message(
+            message_id="<msg1@example.com>",
+            conv_id="abc123",
+            account="test",
+            folder="INBOX",
+            **{"from": Address(addr="alice@example.com")},
+            date=datetime.now(timezone.utc),
+            headers_fetched_at=datetime.now(timezone.utc),
+        )
+        cache.store_message(msg)
+
+        result = api.resolve_conversation_id("xyz")
+
+        assert result.conversation is None
+        assert result.matches is None
+        assert result.error is not None
+        assert "xyz" in result.error
+
+    def test_resolve_exact_match(self, api, cache):
+        """Test resolving exact conv_id works."""
+        msg = Message(
+            message_id="<msg1@example.com>",
+            conv_id="exact_conv_id",
+            account="test",
+            folder="INBOX",
+            **{"from": Address(addr="alice@example.com")},
+            date=datetime.now(timezone.utc),
+            subject="Test",
+            body_text="Body",
+            headers_fetched_at=datetime.now(timezone.utc),
+            body_fetched_at=datetime.now(timezone.utc),
+        )
+        cache.store_message(msg)
+
+        result = api.resolve_conversation_id("exact_conv_id")
+
+        assert result.conversation is not None
+        assert result.conversation.conv_id == "exact_conv_id"
 
 
 class TestGetApi:

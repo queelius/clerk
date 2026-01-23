@@ -318,3 +318,252 @@ class TestCacheClear:
         assert cache.get_message(sample_message.message_id) is None
         stats = cache.get_stats()
         assert stats.message_count == 0
+
+
+class TestPrefixMatching:
+    """Tests for conversation ID prefix matching."""
+
+    def test_find_conversations_by_prefix_single_match(self, cache):
+        """Prefix that matches one conversation returns that conversation."""
+        msg = Message(
+            message_id="<test@example.com>",
+            conv_id="abc123def456",
+            account="test",
+            folder="INBOX",
+            **{"from": Address(addr="alice@example.com")},
+            date=datetime(2025, 1, 1, 10, 0, 0),
+            subject="Test Subject",
+            body_text="Body text",
+            flags=[MessageFlag.SEEN],
+            headers_fetched_at=datetime.now(timezone.utc),
+        )
+        cache.store_message(msg)
+
+        matches = cache.find_conversations_by_prefix("abc")
+        assert len(matches) == 1
+        assert matches[0].conv_id == "abc123def456"
+        assert matches[0].subject == "Test Subject"
+
+    def test_find_conversations_by_prefix_multiple_matches(self, cache):
+        """Prefix that matches multiple conversations returns all of them."""
+        # Create two conversations with similar prefixes
+        msg1 = Message(
+            message_id="<msg1@example.com>",
+            conv_id="abc123xxx",
+            account="test",
+            folder="INBOX",
+            **{"from": Address(addr="alice@example.com")},
+            date=datetime(2025, 1, 1, 10, 0, 0),
+            subject="First Subject",
+            flags=[],
+            headers_fetched_at=datetime.now(timezone.utc),
+        )
+        msg2 = Message(
+            message_id="<msg2@example.com>",
+            conv_id="abc456yyy",
+            account="test",
+            folder="INBOX",
+            **{"from": Address(addr="bob@example.com")},
+            date=datetime(2025, 1, 2, 10, 0, 0),
+            subject="Second Subject",
+            flags=[MessageFlag.SEEN],
+            headers_fetched_at=datetime.now(timezone.utc),
+        )
+
+        cache.store_message(msg1)
+        cache.store_message(msg2)
+
+        # Prefix "abc" matches both
+        matches = cache.find_conversations_by_prefix("abc")
+        assert len(matches) == 2
+        # Should be sorted by latest date descending
+        assert matches[0].conv_id == "abc456yyy"  # newer
+        assert matches[1].conv_id == "abc123xxx"  # older
+
+    def test_find_conversations_by_prefix_no_matches(self, cache):
+        """Prefix that matches no conversations returns empty list."""
+        msg = Message(
+            message_id="<test@example.com>",
+            conv_id="abc123",
+            account="test",
+            folder="INBOX",
+            **{"from": Address(addr="alice@example.com")},
+            date=datetime.now(timezone.utc),
+            flags=[],
+            headers_fetched_at=datetime.now(timezone.utc),
+        )
+        cache.store_message(msg)
+
+        matches = cache.find_conversations_by_prefix("xyz")
+        assert len(matches) == 0
+
+    def test_find_conversations_by_prefix_short_prefix(self, cache):
+        """Even single-character prefixes work."""
+        msg1 = Message(
+            message_id="<msg1@example.com>",
+            conv_id="a12345",
+            account="test",
+            folder="INBOX",
+            **{"from": Address(addr="alice@example.com")},
+            date=datetime(2025, 1, 1, 10, 0, 0),
+            flags=[],
+            headers_fetched_at=datetime.now(timezone.utc),
+        )
+        msg2 = Message(
+            message_id="<msg2@example.com>",
+            conv_id="b67890",
+            account="test",
+            folder="INBOX",
+            **{"from": Address(addr="bob@example.com")},
+            date=datetime(2025, 1, 2, 10, 0, 0),
+            flags=[],
+            headers_fetched_at=datetime.now(timezone.utc),
+        )
+
+        cache.store_message(msg1)
+        cache.store_message(msg2)
+
+        # Single char prefix
+        matches = cache.find_conversations_by_prefix("a")
+        assert len(matches) == 1
+        assert matches[0].conv_id == "a12345"
+
+    def test_get_conversation_unique_prefix(self, cache):
+        """get_conversation returns conversation for unique prefix."""
+        msg = Message(
+            message_id="<test@example.com>",
+            conv_id="unique123abc",
+            account="test",
+            folder="INBOX",
+            **{"from": Address(addr="alice@example.com")},
+            date=datetime(2025, 1, 1, 10, 0, 0),
+            subject="Test Subject",
+            body_text="Body text",
+            flags=[],
+            headers_fetched_at=datetime.now(timezone.utc),
+        )
+        cache.store_message(msg)
+
+        # Unique prefix returns the conversation
+        conv = cache.get_conversation("unique")
+        assert conv is not None
+        assert conv.conv_id == "unique123abc"
+        assert conv.subject == "Test Subject"
+
+    def test_get_conversation_ambiguous_prefix_returns_none(self, cache):
+        """get_conversation returns None for ambiguous prefix."""
+        msg1 = Message(
+            message_id="<msg1@example.com>",
+            conv_id="ambig123",
+            account="test",
+            folder="INBOX",
+            **{"from": Address(addr="alice@example.com")},
+            date=datetime(2025, 1, 1, 10, 0, 0),
+            flags=[],
+            headers_fetched_at=datetime.now(timezone.utc),
+        )
+        msg2 = Message(
+            message_id="<msg2@example.com>",
+            conv_id="ambig456",
+            account="test",
+            folder="INBOX",
+            **{"from": Address(addr="bob@example.com")},
+            date=datetime(2025, 1, 2, 10, 0, 0),
+            flags=[],
+            headers_fetched_at=datetime.now(timezone.utc),
+        )
+
+        cache.store_message(msg1)
+        cache.store_message(msg2)
+
+        # Ambiguous prefix returns None
+        conv = cache.get_conversation("ambig")
+        assert conv is None
+
+        # But more specific prefix works
+        conv1 = cache.get_conversation("ambig1")
+        assert conv1 is not None
+        assert conv1.conv_id == "ambig123"
+
+        conv2 = cache.get_conversation("ambig4")
+        assert conv2 is not None
+        assert conv2.conv_id == "ambig456"
+
+    def test_get_conversation_exact_match(self, cache):
+        """get_conversation exact match takes precedence."""
+        msg = Message(
+            message_id="<test@example.com>",
+            conv_id="exact",
+            account="test",
+            folder="INBOX",
+            **{"from": Address(addr="alice@example.com")},
+            date=datetime(2025, 1, 1, 10, 0, 0),
+            subject="Exact Match",
+            flags=[],
+            headers_fetched_at=datetime.now(timezone.utc),
+        )
+        cache.store_message(msg)
+
+        # Exact match works
+        conv = cache.get_conversation("exact")
+        assert conv is not None
+        assert conv.conv_id == "exact"
+
+    def test_get_conversation_no_match(self, cache):
+        """get_conversation returns None for no match."""
+        msg = Message(
+            message_id="<test@example.com>",
+            conv_id="abc123",
+            account="test",
+            folder="INBOX",
+            **{"from": Address(addr="alice@example.com")},
+            date=datetime.now(timezone.utc),
+            flags=[],
+            headers_fetched_at=datetime.now(timezone.utc),
+        )
+        cache.store_message(msg)
+
+        conv = cache.get_conversation("xyz")
+        assert conv is None
+
+    def test_find_conversations_includes_summary_fields(self, cache):
+        """find_conversations_by_prefix returns complete summary data."""
+        msg1 = Message(
+            message_id="<msg1@example.com>",
+            conv_id="conv_test",
+            account="test_account",
+            folder="INBOX",
+            **{"from": Address(addr="alice@example.com")},
+            date=datetime(2025, 1, 1, 10, 0, 0),
+            subject="Original Subject",
+            body_text="First message body",
+            flags=[],
+            headers_fetched_at=datetime.now(timezone.utc),
+        )
+        msg2 = Message(
+            message_id="<msg2@example.com>",
+            conv_id="conv_test",
+            account="test_account",
+            folder="INBOX",
+            **{"from": Address(addr="bob@example.com")},
+            to=[Address(addr="alice@example.com")],
+            date=datetime(2025, 1, 2, 10, 0, 0),
+            subject="Re: Original Subject",
+            body_text="Reply body",
+            flags=[MessageFlag.SEEN],
+            headers_fetched_at=datetime.now(timezone.utc),
+        )
+
+        cache.store_message(msg1)
+        cache.store_message(msg2)
+
+        matches = cache.find_conversations_by_prefix("conv")
+        assert len(matches) == 1
+
+        summary = matches[0]
+        assert summary.conv_id == "conv_test"
+        assert summary.message_count == 2
+        assert summary.unread_count == 1  # msg1 is unread
+        assert summary.account == "test_account"
+        assert "alice@example.com" in summary.participants
+        assert "bob@example.com" in summary.participants

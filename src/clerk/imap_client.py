@@ -468,8 +468,16 @@ class ImapClient:
         """Fetch just the body of a specific message."""
         self.client.select_folder(folder, readonly=True)
 
-        # Search for the message by Message-ID header
-        results = self.client.search(["HEADER", "Message-ID", message_id])
+        # Check if this is a synthetic message_id (e.g., <123@local>)
+        import re
+        synthetic_match = re.match(r"<(\d+)@local>", message_id)
+        if synthetic_match:
+            # Fetch directly by UID
+            uid = int(synthetic_match.group(1))
+            results = [uid]
+        else:
+            # Search for the message by Message-ID header
+            results = self.client.search(["HEADER", "Message-ID", message_id])
 
         if not results:
             return None, None
@@ -503,8 +511,15 @@ class ImapClient:
         """
         self.client.select_folder(folder, readonly=True)
 
-        # Search for the message by Message-ID header
-        results = self.client.search(["HEADER", "Message-ID", message_id])
+        # Check if this is a synthetic message_id (e.g., <123@local>)
+        import re
+        synthetic_match = re.match(r"<(\d+)@local>", message_id)
+        if synthetic_match:
+            # Fetch directly by UID
+            results = [int(synthetic_match.group(1))]
+        else:
+            # Search for the message by Message-ID header
+            results = self.client.search(["HEADER", "Message-ID", message_id])
 
         if not results:
             raise FileNotFoundError(f"Message not found: {message_id}")

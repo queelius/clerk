@@ -225,38 +225,121 @@ class Cache:
                 return self._row_to_message(row)
         return None
 
-    def get_conversation(self, conv_id: str) -> Conversation | None:
-        """Get a conversation with all its messages."""
+    def find_conversations_by_prefix(self, prefix: str) -> list[ConversationSummary]:
+        """Find all conversations matching an ID prefix.
+
+        Returns lightweight summaries for disambiguation when multiple
+        conversations match. Any prefix length is supported.
+
+        Args:
+            prefix: Conversation ID prefix to match
+
+        Returns:
+            List of ConversationSummary objects for matching conversations,
+            sorted by latest date descending.
+        """
         with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    conv_id,
+                    MAX(date_utc) as latest_date,
+                    MIN(subject) as subject,
+                    COUNT(*) as message_count,
+                    SUM(CASE WHEN flags NOT LIKE '%"seen"%' THEN 1 ELSE 0 END) as unread_count,
+                    GROUP_CONCAT(DISTINCT from_addr) as participants,
+                    (SELECT body_text FROM messages m2
+                     WHERE m2.conv_id = messages.conv_id
+                     ORDER BY date_utc DESC LIMIT 1) as snippet,
+                    MIN(account) as account
+                FROM messages
+                WHERE conv_id LIKE ?
+                GROUP BY conv_id
+                ORDER BY latest_date DESC
+                """,
+                (prefix + "%",),
+            ).fetchall()
+
+            summaries = []
+            for row in rows:
+                participants = row["participants"].split(",") if row["participants"] else []
+                snippet = (row["snippet"] or "")[:100]
+
+                summaries.append(
+                    ConversationSummary(
+                        conv_id=row["conv_id"],
+                        subject=row["subject"] or "(no subject)",
+                        participants=participants,
+                        message_count=row["message_count"],
+                        unread_count=row["unread_count"],
+                        latest_date=datetime.fromisoformat(row["latest_date"]),
+                        snippet=snippet,
+                        account=row["account"],
+                    )
+                )
+
+            return summaries
+
+    def get_conversation(self, conv_id: str) -> Conversation | None:
+        """Get a conversation by ID or unique prefix.
+
+        Supports partial ID prefix matching with any prefix length.
+        Returns None if no match or if multiple conversations match
+        (use find_conversations_by_prefix() for disambiguation in that case).
+
+        Args:
+            conv_id: Full conversation ID or unique prefix
+
+        Returns:
+            Conversation with all messages, or None if not found or ambiguous.
+        """
+        with self._connect() as conn:
+            # Try exact match first
             rows = conn.execute(
                 "SELECT * FROM messages WHERE conv_id = ? ORDER BY date_utc ASC",
                 (conv_id,),
             ).fetchall()
 
-            if not rows:
-                return None
+            if rows:
+                return self._build_conversation(rows)
 
-            messages = [self._row_to_message(row) for row in rows]
-            participants = set()
-            unread_count = 0
+            # Try prefix match - check if unique
+            matches = self.find_conversations_by_prefix(conv_id)
+            if len(matches) == 1:
+                # Unique match - fetch full conversation
+                rows = conn.execute(
+                    "SELECT * FROM messages WHERE conv_id = ? ORDER BY date_utc ASC",
+                    (matches[0].conv_id,),
+                ).fetchall()
+                return self._build_conversation(rows)
 
-            for msg in messages:
-                participants.add(msg.from_.addr)
-                for addr in msg.to + msg.cc:
-                    participants.add(addr.addr)
-                if not msg.is_read:
-                    unread_count += 1
+            # No match or ambiguous (multiple matches)
+            return None
 
-            return Conversation(
-                conv_id=conv_id,
-                subject=messages[0].subject,
-                participants=sorted(participants),
-                message_count=len(messages),
-                unread_count=unread_count,
-                latest_date=max(m.date for m in messages),
-                messages=messages,
-                account=messages[0].account,
-            )
+    def _build_conversation(self, rows: list[sqlite3.Row]) -> Conversation:
+        """Build a Conversation object from message rows."""
+        messages = [self._row_to_message(row) for row in rows]
+        conv_id = messages[0].conv_id
+        participants = set()
+        unread_count = 0
+
+        for msg in messages:
+            participants.add(msg.from_.addr)
+            for addr in msg.to + msg.cc:
+                participants.add(addr.addr)
+            if not msg.is_read:
+                unread_count += 1
+
+        return Conversation(
+            conv_id=conv_id,
+            subject=messages[0].subject,
+            participants=sorted(participants),
+            message_count=len(messages),
+            unread_count=unread_count,
+            latest_date=max(m.date for m in messages),
+            messages=messages,
+            account=messages[0].account,
+        )
 
     def list_conversations(
         self,

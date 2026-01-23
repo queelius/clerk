@@ -332,12 +332,39 @@ class ClerkShell:
 
         conv_id = positional[0]
 
-        # Try as conversation first
-        conv = self.api.get_conversation(conv_id)
-        if conv:
+        # Try as conversation first (with prefix matching support)
+        result = self.api.resolve_conversation_id(conv_id)
+
+        if result.conversation:
+            conv = result.conversation
             if options.get("json"):
                 return json.dumps(conv.model_dump(), default=str, indent=2)
             return format_conversation_detail(conv)
+
+        if result.matches:
+            # Ambiguous prefix - show summaries for disambiguation
+            if options.get("json"):
+                return json.dumps({
+                    "error": "ambiguous_prefix",
+                    "prefix": conv_id,
+                    "matches": [m.model_dump() for m in result.matches],
+                }, default=str, indent=2)
+
+            lines = [f"Multiple conversations match '{conv_id}':", ""]
+            lines.append(f"{'ID':<12} {'From':<25} {'Subject':<40} {'Date':<10}")
+            lines.append("-" * 90)
+
+            for m in result.matches:
+                from_str = m.participants[0] if m.participants else ""
+                if len(from_str) > 25:
+                    from_str = from_str[:22] + "..."
+                subject = m.subject[:40] if len(m.subject) <= 40 else m.subject[:37] + "..."
+                date_str = m.latest_date.strftime("%b %d")
+                lines.append(f"{m.conv_id:<12} {from_str:<25} {subject:<40} {date_str:<10}")
+
+            lines.append("")
+            lines.append("Use a longer prefix to uniquely identify the conversation.")
+            return "\n".join(lines)
 
         # Try as message
         msg = self.api.get_message(conv_id)

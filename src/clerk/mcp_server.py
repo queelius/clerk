@@ -96,22 +96,40 @@ def clerk_inbox(
 def clerk_show(conv_id: str) -> dict[str, Any]:
     """Get full conversation or message details.
 
+    Supports prefix matching - if the prefix uniquely identifies a conversation,
+    it will be returned. If multiple conversations match, summaries are returned
+    for disambiguation.
+
     Args:
-        conv_id: Conversation ID or message ID
+        conv_id: Conversation ID, unique prefix, or message ID
 
     Returns:
-        Dictionary with conversation/message details including all messages
+        Dictionary with one of:
+        - type="conversation" with full conversation details
+        - type="ambiguous" with list of matching conversation summaries
+        - type="message" with message details
+        - error if not found
     """
     ensure_dirs()
     api = get_api()
 
-    # Try as conversation first
-    conv = api.get_conversation(conv_id)
+    # Try as conversation first (with prefix matching support)
+    result = api.resolve_conversation_id(conv_id)
 
-    if conv:
+    if result.conversation:
         return {
             "type": "conversation",
-            "conversation": conv.model_dump(),
+            "conversation": result.conversation.model_dump(),
+        }
+
+    if result.matches:
+        # Ambiguous prefix - return summaries for disambiguation
+        return {
+            "type": "ambiguous",
+            "prefix": conv_id,
+            "matches": [m.model_dump() for m in result.matches],
+            "count": len(result.matches),
+            "hint": "Use a longer prefix to uniquely identify the conversation.",
         }
 
     # Try as message ID

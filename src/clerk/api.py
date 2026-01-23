@@ -57,6 +57,21 @@ class SendPreview:
     expires_in_seconds: int
 
 
+@dataclass
+class ConversationLookupResult:
+    """Result of conversation ID lookup.
+
+    One of these will be set:
+    - conversation: If a unique match was found
+    - matches: If multiple conversations match (ambiguous prefix)
+    - error: If no matches were found
+    """
+
+    conversation: Conversation | None = None
+    matches: list[ConversationSummary] | None = None
+    error: str | None = None
+
+
 class ClerkAPI:
     """Unified API for clerk email operations.
 
@@ -246,6 +261,37 @@ class ClerkAPI:
                     msg.body_html = body_html
 
         return msg
+
+    def resolve_conversation_id(
+        self, conv_id: str, fresh: bool = False
+    ) -> ConversationLookupResult:
+        """Resolve a conversation ID or prefix.
+
+        Use this method when you need to handle ambiguous prefixes gracefully.
+        It supports any prefix length and provides disambiguation when multiple
+        conversations match.
+
+        Args:
+            conv_id: Conversation ID or prefix
+            fresh: Bypass cache for body fetching
+
+        Returns:
+            ConversationLookupResult with one of:
+            - conversation: If unique match found (bodies will be fetched)
+            - matches: If ambiguous (multiple matches) - summaries for disambiguation
+            - error: If no matches found
+        """
+        # Try to get conversation (handles unique prefix internally)
+        conv = self.get_conversation(conv_id, fresh=fresh)
+        if conv:
+            return ConversationLookupResult(conversation=conv)
+
+        # Check for ambiguous matches
+        matches = self.cache.find_conversations_by_prefix(conv_id)
+        if matches:
+            return ConversationLookupResult(matches=matches)
+
+        return ConversationLookupResult(error=f"No conversation matching '{conv_id}'")
 
     # =========================================================================
     # Search Operations

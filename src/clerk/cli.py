@@ -158,24 +158,17 @@ def show(
 ) -> None:
     """Show a conversation or message."""
     ensure_dirs()
+    from .api import get_api
+
+    api = get_api()
     cache = get_cache()
     config = get_config()
 
-    # Try as conversation first
-    conv = cache.get_conversation(conv_or_msg_id)
+    # Try as conversation first (with prefix matching support)
+    result = api.resolve_conversation_id(conv_or_msg_id, fresh=fresh)
 
-    if conv:
-        # Fetch bodies if needed
-        for msg in conv.messages:
-            if msg.body_text is None:
-                if fresh or not cache.is_fresh(msg.message_id, config.cache.body_freshness_min, check_body=True):
-                    # Fetch from server
-                    with get_imap_client(msg.account) as client:
-                        body_text, body_html = client.fetch_message_body(msg.folder, msg.message_id)
-                        cache.update_body(msg.message_id, body_text, body_html)
-                        msg.body_text = body_text
-                        msg.body_html = body_html
-
+    if result.conversation:
+        conv = result.conversation
         if as_json:
             output_json(conv.model_dump())
             return
@@ -195,6 +188,39 @@ def show(
             console.print()
 
         return
+
+    if result.matches:
+        # Ambiguous prefix - show summaries for disambiguation
+        if as_json:
+            output_json({
+                "error": "ambiguous_prefix",
+                "prefix": conv_or_msg_id,
+                "matches": [m.model_dump() for m in result.matches],
+            })
+            raise typer.Exit(ExitCode.INVALID_INPUT.value)
+
+        console.print(f"[yellow]Multiple conversations match '{conv_or_msg_id}':[/yellow]")
+        console.print()
+
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("ID", style="dim", width=12)
+        table.add_column("From", width=25)
+        table.add_column("Subject", width=40)
+        table.add_column("Date", width=12)
+
+        for m in result.matches:
+            from_str = m.participants[0] if m.participants else ""
+            table.add_row(
+                m.conv_id,
+                from_str[:25],
+                m.subject[:40],
+                m.latest_date.strftime("%b %d"),
+            )
+
+        console.print(table)
+        console.print()
+        console.print("[dim]Use a longer prefix to uniquely identify the conversation.[/dim]")
+        raise typer.Exit(ExitCode.INVALID_INPUT.value)
 
     # Try as message ID
     msg = cache.get_message(conv_or_msg_id)
