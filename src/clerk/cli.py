@@ -1101,12 +1101,11 @@ def skill_uninstall(
     """
     from .skill import uninstall_skill
 
+    location = "local" if local else "global"
     if uninstall_skill(local=local):
-        location = "local" if local else "global"
         console.print(f"[green]Skill uninstalled ({location}).[/green]")
     else:
-        location = "locally" if local else "globally"
-        console.print(f"[yellow]Skill not installed {location}.[/yellow]")
+        console.print(f"[yellow]Skill not installed ({location}).[/yellow]")
 
 
 @skill_app.command(name="status")

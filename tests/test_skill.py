@@ -1,5 +1,6 @@
 """Tests for clerk skill module."""
 
+import pytest
 
 from clerk.skill import (
     SKILL_CONTENT,
@@ -52,7 +53,6 @@ class TestInstallSkill:
         """Test that install creates necessary parent directories."""
         monkeypatch.setattr("clerk.skill.Path.home", lambda: tmp_path)
 
-        # Ensure .claude doesn't exist
         assert not (tmp_path / ".claude").exists()
 
         install_skill(local=False)
@@ -65,7 +65,6 @@ class TestInstallSkill:
         """Test that install overwrites existing SKILL.md."""
         monkeypatch.setattr("clerk.skill.Path.home", lambda: tmp_path)
 
-        # Create existing file with different content
         skill_dir = tmp_path / ".claude" / "skills" / "clerk"
         skill_dir.mkdir(parents=True)
         skill_file = skill_dir / "SKILL.md"
@@ -81,12 +80,10 @@ class TestUninstallSkill:
         """Test uninstalling skill from global location."""
         monkeypatch.setattr("clerk.skill.Path.home", lambda: tmp_path)
 
-        # First install
         install_skill(local=False)
         skill_dir = tmp_path / ".claude" / "skills" / "clerk"
         assert skill_dir.exists()
 
-        # Then uninstall
         result = uninstall_skill(local=False)
 
         assert result is True
@@ -96,12 +93,10 @@ class TestUninstallSkill:
         """Test uninstalling skill from local location."""
         monkeypatch.chdir(tmp_path)
 
-        # First install
         install_skill(local=True)
         skill_dir = tmp_path / ".claude" / "skills" / "clerk"
         assert skill_dir.exists()
 
-        # Then uninstall
         result = uninstall_skill(local=True)
 
         assert result is True
@@ -119,11 +114,9 @@ class TestUninstallSkill:
         """Test that uninstall cleans up empty parent directories."""
         monkeypatch.setattr("clerk.skill.Path.home", lambda: tmp_path)
 
-        # Install and then uninstall
         install_skill(local=False)
         uninstall_skill(local=False)
 
-        # Skills dir should be cleaned up if empty
         skills_dir = tmp_path / ".claude" / "skills"
         assert not skills_dir.exists()
 
@@ -131,28 +124,31 @@ class TestUninstallSkill:
         """Test that uninstall doesn't remove sibling skills."""
         monkeypatch.setattr("clerk.skill.Path.home", lambda: tmp_path)
 
-        # Create another skill
         other_skill = tmp_path / ".claude" / "skills" / "other"
         other_skill.mkdir(parents=True)
         (other_skill / "SKILL.md").write_text("other skill")
 
-        # Install clerk skill
         install_skill(local=False)
-
-        # Uninstall clerk skill
         uninstall_skill(local=False)
 
-        # Other skill should still exist
         assert other_skill.exists()
         assert (tmp_path / ".claude" / "skills").exists()
 
 
 class TestGetSkillStatus:
-    def test_status_none_installed(self, tmp_path, monkeypatch):
-        """Test status when no skills are installed."""
-        monkeypatch.setattr("clerk.skill.Path.home", lambda: tmp_path)
-        monkeypatch.chdir(tmp_path)
+    @pytest.fixture()
+    def isolated_paths(self, tmp_path, monkeypatch):
+        """Set up separate global and local paths for skill status tests."""
+        global_home = tmp_path / "home"
+        local_dir = tmp_path / "project"
+        global_home.mkdir()
+        local_dir.mkdir()
+        monkeypatch.setattr("clerk.skill.Path.home", lambda: global_home)
+        monkeypatch.chdir(local_dir)
+        return global_home, local_dir
 
+    def test_status_none_installed(self, isolated_paths):
+        """Test status when no skills are installed."""
         status = get_skill_status()
 
         assert status.global_installed is False
@@ -160,16 +156,9 @@ class TestGetSkillStatus:
         assert status.local_installed is False
         assert status.local_path is None
 
-    def test_status_global_installed(self, tmp_path, monkeypatch):
+    def test_status_global_installed(self, isolated_paths):
         """Test status when global skill is installed."""
-        # Use different paths for global and local
-        global_home = tmp_path / "home"
-        local_dir = tmp_path / "project"
-        global_home.mkdir()
-        local_dir.mkdir()
-
-        monkeypatch.setattr("clerk.skill.Path.home", lambda: global_home)
-        monkeypatch.chdir(local_dir)
+        global_home, _ = isolated_paths
 
         install_skill(local=False)
         status = get_skill_status()
@@ -179,16 +168,9 @@ class TestGetSkillStatus:
         assert status.local_installed is False
         assert status.local_path is None
 
-    def test_status_local_installed(self, tmp_path, monkeypatch):
+    def test_status_local_installed(self, isolated_paths):
         """Test status when local skill is installed."""
-        # Use different paths for global and local
-        global_home = tmp_path / "home"
-        local_dir = tmp_path / "project"
-        global_home.mkdir()
-        local_dir.mkdir()
-
-        monkeypatch.setattr("clerk.skill.Path.home", lambda: global_home)
-        monkeypatch.chdir(local_dir)
+        _, local_dir = isolated_paths
 
         install_skill(local=True)
         status = get_skill_status()
@@ -198,17 +180,8 @@ class TestGetSkillStatus:
         assert status.local_installed is True
         assert status.local_path == local_dir / ".claude" / "skills" / "clerk"
 
-    def test_status_both_installed(self, tmp_path, monkeypatch):
+    def test_status_both_installed(self, isolated_paths):
         """Test status when both global and local skills are installed."""
-        # Use different paths for global and local
-        global_home = tmp_path / "home"
-        local_dir = tmp_path / "project"
-        global_home.mkdir()
-        local_dir.mkdir()
-
-        monkeypatch.setattr("clerk.skill.Path.home", lambda: global_home)
-        monkeypatch.chdir(local_dir)
-
         install_skill(local=False)
         install_skill(local=True)
         status = get_skill_status()

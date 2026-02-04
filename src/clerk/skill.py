@@ -1,5 +1,6 @@
 """Clerk skill management for Claude Code integration."""
 
+import shutil
 from pathlib import Path
 from typing import NamedTuple
 
@@ -138,14 +139,20 @@ class SkillStatus(NamedTuple):
     local_path: Path | None
 
 
+def _get_skill_path(local: bool) -> Path:
+    """Get the skill installation path."""
+    base = Path.cwd() if local else Path.home()
+    return base / ".claude" / "skills" / "clerk"
+
+
 def get_global_skill_path() -> Path:
     """Get the global skill installation path."""
-    return Path.home() / ".claude" / "skills" / "clerk"
+    return _get_skill_path(local=False)
 
 
 def get_local_skill_path() -> Path:
     """Get the local (project) skill installation path."""
-    return Path.cwd() / ".claude" / "skills" / "clerk"
+    return _get_skill_path(local=True)
 
 
 def install_skill(local: bool = False) -> Path:
@@ -158,13 +165,10 @@ def install_skill(local: bool = False) -> Path:
     Returns:
         Path to the installed SKILL.md file.
     """
-    skill_dir = get_local_skill_path() if local else get_global_skill_path()
+    skill_dir = _get_skill_path(local)
     skill_file = skill_dir / "SKILL.md"
 
-    # Create directory
     skill_dir.mkdir(parents=True, exist_ok=True)
-
-    # Write skill file
     skill_file.write_text(SKILL_CONTENT)
 
     return skill_file
@@ -180,21 +184,17 @@ def uninstall_skill(local: bool = False) -> bool:
     Returns:
         True if skill was uninstalled, False if it wasn't installed.
     """
-    import shutil
-
-    skill_dir = get_local_skill_path() if local else get_global_skill_path()
+    skill_dir = _get_skill_path(local)
 
     if not skill_dir.exists():
         return False
 
-    # Remove the entire skill directory
     shutil.rmtree(skill_dir)
 
     # Clean up empty parent directories
     skills_dir = skill_dir.parent
     if skills_dir.exists() and not any(skills_dir.iterdir()):
         skills_dir.rmdir()
-        # Also clean up .claude if empty
         claude_dir = skills_dir.parent
         if claude_dir.name == ".claude" and not any(claude_dir.iterdir()):
             claude_dir.rmdir()
@@ -203,20 +203,16 @@ def uninstall_skill(local: bool = False) -> bool:
 
 
 def get_skill_status() -> SkillStatus:
-    """Get the current skill installation status.
-
-    Returns:
-        SkillStatus with global and local installation info.
-    """
+    """Get the current skill installation status."""
     global_path = get_global_skill_path()
     local_path = get_local_skill_path()
 
-    global_skill = global_path / "SKILL.md"
-    local_skill = local_path / "SKILL.md"
+    global_installed = (global_path / "SKILL.md").exists()
+    local_installed = (local_path / "SKILL.md").exists()
 
     return SkillStatus(
-        global_installed=global_skill.exists(),
-        global_path=global_path if global_skill.exists() else None,
-        local_installed=local_skill.exists(),
-        local_path=local_path if local_skill.exists() else None,
+        global_installed=global_installed,
+        global_path=global_path if global_installed else None,
+        local_installed=local_installed,
+        local_path=local_path if local_installed else None,
     )

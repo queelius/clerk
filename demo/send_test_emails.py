@@ -21,10 +21,10 @@ def send_email(
     to_addr: str,
     subject: str,
     body: str,
-    attachments: list = None,
-    in_reply_to: str = None,
-    references: list[str] = None,
-    message_id_key: str = None,
+    attachments: list | None = None,
+    in_reply_to: str | None = None,
+    references: list[str] | None = None,
+    message_id_key: str | None = None,
     hours_ago: int = 0,
 ):
     """Send a test email with optional threading support."""
@@ -439,11 +439,11 @@ Bob""",
         hours_ago=1,
     )
 
-    print(f"\nDone! 18 test emails sent to demo@example.com")
-    print(f"  - 3 emails in the Q1 Project thread")
-    print(f"  - 2 emails in the Meeting thread")
-    print(f"  - 2 emails with attachments")
-    print(f"  - 6 different senders")
+    print("\nDone! 18 test emails sent to demo@example.com")
+    print("  - 3 emails in the Q1 Project thread")
+    print("  - 2 emails in the Meeting thread")
+    print("  - 2 emails with attachments")
+    print("  - 6 different senders")
 
 
 if __name__ == "__main__":
