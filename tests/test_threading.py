@@ -1,8 +1,6 @@
 """Tests for conversation threading."""
 
-from datetime import datetime, timezone
-
-import pytest
+from datetime import UTC, datetime
 
 from clerk.models import Address, Message, MessageFlag
 from clerk.threading import (
@@ -30,12 +28,12 @@ def make_message(
         account="test",
         folder="INBOX",
         **{"from": Address(addr=from_addr)},
-        date=date or datetime.now(timezone.utc),
+        date=date or datetime.now(UTC),
         subject=subject,
         in_reply_to=in_reply_to,
         references=references or [],
         flags=flags or [],
-        headers_fetched_at=datetime.now(timezone.utc),
+        headers_fetched_at=datetime.now(UTC),
     )
 
 

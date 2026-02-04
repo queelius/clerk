@@ -1,9 +1,7 @@
 """Clerk CLI - A thin CLI for LLM agents to interact with email."""
 
 import json
-import sys
-from datetime import datetime
-from typing import Annotated, Optional
+from typing import Annotated
 
 import typer
 from rich.console import Console
@@ -13,7 +11,6 @@ from . import __version__
 from .cache import get_cache
 from .config import (
     AccountConfig,
-    ClerkConfig,
     FromAddress,
     ImapConfig,
     OAuthConfig,
@@ -27,9 +24,9 @@ from .config import (
     save_password,
 )
 from .drafts import get_draft_manager
-from .imap_client import get_imap_client, ImapClient
+from .imap_client import ImapClient, get_imap_client
 from .models import Address, ExitCode, MessageFlag
-from .smtp_client import check_send_allowed, format_draft_preview, send_draft, SmtpClient
+from .smtp_client import check_send_allowed, format_draft_preview, send_draft
 
 app = typer.Typer(
     name="clerk",
@@ -62,7 +59,7 @@ def exit_with_code(code: ExitCode, message: str | None = None) -> None:
 def inbox(
     limit: Annotated[int, typer.Option("--limit", "-n", help="Number of conversations")] = 20,
     unread: Annotated[bool, typer.Option("--unread", "-u", help="Only show unread")] = False,
-    account: Annotated[Optional[str], typer.Option("--account", "-a", help="Account name")] = None,
+    account: Annotated[str | None, typer.Option("--account", "-a", help="Account name")] = None,
     folder: Annotated[str, typer.Option("--folder", "-f", help="Folder to list")] = "INBOX",
     fresh: Annotated[bool, typer.Option("--fresh", help="Bypass cache, fetch from server")] = False,
     as_json: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
@@ -225,9 +222,8 @@ def show(
     # Try as message ID
     msg = cache.get_message(conv_or_msg_id)
     if msg:
-        if msg.body_text is None:
-            if fresh or not cache.is_fresh(msg.message_id, config.cache.body_freshness_min, check_body=True):
-                with get_imap_client(msg.account) as client:
+        if msg.body_text is None and (fresh or not cache.is_fresh(msg.message_id, config.cache.body_freshness_min, check_body=True)):
+            with get_imap_client(msg.account) as client:
                     body_text, body_html = client.fetch_message_body(msg.folder, msg.message_id)
                     cache.update_body(msg.message_id, body_text, body_html)
                     msg.body_text = body_text
@@ -250,7 +246,7 @@ def show(
 
 @app.command(name="unread")
 def unread_cmd(
-    account: Annotated[Optional[str], typer.Option("--account", "-a", help="Account name")] = None,
+    account: Annotated[str | None, typer.Option("--account", "-a", help="Account name")] = None,
     as_json: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
 ) -> None:
     """Show unread message counts by folder."""
@@ -278,7 +274,7 @@ def unread_cmd(
 def search(
     query: Annotated[str, typer.Argument(help="Search query")],
     limit: Annotated[int, typer.Option("--limit", "-n", help="Max results")] = 20,
-    account: Annotated[Optional[str], typer.Option("--account", "-a", help="Account name")] = None,
+    account: Annotated[str | None, typer.Option("--account", "-a", help="Account name")] = None,
     as_json: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
 ) -> None:
     """Search messages in cache.
@@ -331,9 +327,9 @@ def draft_create(
     to: Annotated[str, typer.Option("--to", "-t", help="Recipient email address")],
     subject: Annotated[str, typer.Option("--subject", "-s", help="Subject line")],
     body: Annotated[str, typer.Option("--body", "-b", help="Message body")],
-    cc: Annotated[Optional[str], typer.Option("--cc", help="CC recipients (comma-separated)")] = None,
-    account: Annotated[Optional[str], typer.Option("--account", "-a", help="Account name")] = None,
-    reply_to: Annotated[Optional[str], typer.Option("--reply-to", help="Conversation ID to reply to")] = None,
+    cc: Annotated[str | None, typer.Option("--cc", help="CC recipients (comma-separated)")] = None,
+    account: Annotated[str | None, typer.Option("--account", "-a", help="Account name")] = None,
+    reply_to: Annotated[str | None, typer.Option("--reply-to", help="Conversation ID to reply to")] = None,
     as_json: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
 ) -> None:
     """Create a new draft message."""
@@ -372,7 +368,7 @@ def draft_create(
 
 @draft_app.command(name="list")
 def draft_list(
-    account: Annotated[Optional[str], typer.Option("--account", "-a", help="Account name")] = None,
+    account: Annotated[str | None, typer.Option("--account", "-a", help="Account name")] = None,
     as_json: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
 ) -> None:
     """List pending drafts."""
@@ -493,7 +489,7 @@ def send(
 
 @app.command()
 def folders(
-    account: Annotated[Optional[str], typer.Option("--account", "-a", help="Account name")] = None,
+    account: Annotated[str | None, typer.Option("--account", "-a", help="Account name")] = None,
     as_json: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
 ) -> None:
     """List folders/labels."""
@@ -518,7 +514,7 @@ def move(
     message_id: Annotated[str, typer.Argument(help="Message ID")],
     to_folder: Annotated[str, typer.Argument(help="Destination folder")],
     from_folder: Annotated[str, typer.Option("--from", help="Source folder")] = "INBOX",
-    account: Annotated[Optional[str], typer.Option("--account", "-a", help="Account name")] = None,
+    account: Annotated[str | None, typer.Option("--account", "-a", help="Account name")] = None,
 ) -> None:
     """Move a message to another folder."""
     ensure_dirs()
@@ -537,7 +533,7 @@ def move(
 @app.command()
 def archive(
     message_id: Annotated[str, typer.Argument(help="Message ID")],
-    account: Annotated[Optional[str], typer.Option("--account", "-a", help="Account name")] = None,
+    account: Annotated[str | None, typer.Option("--account", "-a", help="Account name")] = None,
 ) -> None:
     """Archive a message."""
     ensure_dirs()
@@ -556,7 +552,7 @@ def archive(
 @app.command()
 def flag(
     message_id: Annotated[str, typer.Argument(help="Message ID")],
-    account: Annotated[Optional[str], typer.Option("--account", "-a", help="Account name")] = None,
+    account: Annotated[str | None, typer.Option("--account", "-a", help="Account name")] = None,
 ) -> None:
     """Flag/star a message."""
     ensure_dirs()
@@ -583,7 +579,7 @@ def flag(
 @app.command(name="mark-read")
 def mark_read(
     message_id: Annotated[str, typer.Argument(help="Message ID")],
-    account: Annotated[Optional[str], typer.Option("--account", "-a", help="Account name")] = None,
+    account: Annotated[str | None, typer.Option("--account", "-a", help="Account name")] = None,
 ) -> None:
     """Mark a message as read."""
     ensure_dirs()
@@ -610,7 +606,7 @@ def mark_read(
 @app.command(name="mark-unread")
 def mark_unread(
     message_id: Annotated[str, typer.Argument(help="Message ID")],
-    account: Annotated[Optional[str], typer.Option("--account", "-a", help="Account name")] = None,
+    account: Annotated[str | None, typer.Option("--account", "-a", help="Account name")] = None,
 ) -> None:
     """Mark a message as unread."""
     ensure_dirs()
@@ -681,7 +677,7 @@ def cache_clear() -> None:
 
 @cache_app.command(name="refresh")
 def cache_refresh(
-    account: Annotated[Optional[str], typer.Option("--account", "-a", help="Account name")] = None,
+    account: Annotated[str | None, typer.Option("--account", "-a", help="Account name")] = None,
 ) -> None:
     """Force full refresh from server."""
     ensure_dirs()
@@ -841,7 +837,7 @@ def accounts_list(
 def accounts_add(
     name: Annotated[str, typer.Argument(help="Account name")],
     protocol: Annotated[str, typer.Option("--protocol", "-p", help="Protocol: imap or gmail")] = "imap",
-    email: Annotated[Optional[str], typer.Option("--email", "-e", help="Email address")] = None,
+    email: Annotated[str | None, typer.Option("--email", "-e", help="Email address")] = None,
     set_default: Annotated[bool, typer.Option("--default", help="Set as default account")] = False,
 ) -> None:
     """Add a new email account interactively."""
@@ -954,17 +950,16 @@ def _setup_gmail_account(name: str, email: str) -> AccountConfig:
     )
 
     # Try to authenticate now if the file exists
-    if client_id_file.exists():
-        if typer.confirm("\nAuthenticate now?", default=True):
-            try:
-                from .oauth import run_oauth_flow
+    if client_id_file.exists() and typer.confirm("\nAuthenticate now?", default=True):
+        try:
+            from .oauth import run_oauth_flow
 
-                console.print("\n[dim]Opening browser for authentication...[/dim]")
-                run_oauth_flow(client_id_file, name)
-                console.print("[green]Authentication successful![/green]")
-            except Exception as e:
-                console.print(f"[yellow]Authentication failed: {e}[/yellow]")
-                console.print("You can try again later with 'clerk accounts test'.")
+            console.print("\n[dim]Opening browser for authentication...[/dim]")
+            run_oauth_flow(client_id_file, name)
+            console.print("[green]Authentication successful![/green]")
+        except Exception as e:
+            console.print(f"[yellow]Authentication failed: {e}[/yellow]")
+            console.print("You can try again later with 'clerk accounts test'.")
 
     return account_config
 
@@ -1207,10 +1202,10 @@ def shell() -> None:
 @app.command()
 def attachment(
     message_id: Annotated[str, typer.Argument(help="Message ID")],
-    filename: Annotated[Optional[str], typer.Argument(help="Attachment filename")] = None,
-    save: Annotated[Optional[str], typer.Option("--save", "-s", help="Save to path")] = None,
+    filename: Annotated[str | None, typer.Argument(help="Attachment filename")] = None,
+    save: Annotated[str | None, typer.Option("--save", "-s", help="Save to path")] = None,
     list_only: Annotated[bool, typer.Option("--list", "-l", help="List attachments only")] = False,
-    account: Annotated[Optional[str], typer.Option("--account", "-a", help="Account name")] = None,
+    account: Annotated[str | None, typer.Option("--account", "-a", help="Account name")] = None,
 ) -> None:
     """Download or list attachments from a message.
 
@@ -1317,7 +1312,7 @@ def search_sql(
 def search_advanced(
     query: Annotated[str, typer.Argument(help="Search query with operators")],
     limit: Annotated[int, typer.Option("--limit", "-n", help="Max results")] = 20,
-    account: Annotated[Optional[str], typer.Option("--account", "-a", help="Account name")] = None,
+    account: Annotated[str | None, typer.Option("--account", "-a", help="Account name")] = None,
     as_json: Annotated[bool, typer.Option("--json", help="Output as JSON")] = False,
 ) -> None:
     """Advanced search with operator support.

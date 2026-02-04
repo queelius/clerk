@@ -1,8 +1,6 @@
 """Integration tests for sending emails with Greenmail."""
 
-import pytest
 
-from tests.integration.conftest import GREENMAIL_EMAIL
 
 
 class TestSend:

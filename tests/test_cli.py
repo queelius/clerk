@@ -1,14 +1,13 @@
 """Tests for clerk CLI."""
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
-import pytest
 from typer.testing import CliRunner
 
 from clerk.cli import app
-from clerk.models import Address, CacheStats, ConversationSummary, Message, MessageFlag
+from clerk.models import Address, CacheStats, ConversationSummary, Message
 
 runner = CliRunner()
 
@@ -115,7 +114,7 @@ class TestCacheCommands:
         mock_get_cache.return_value = mock_cache
 
         # Simulate user typing "n" to cancel
-        result = runner.invoke(app, ["cache", "clear"], input="n\n")
+        runner.invoke(app, ["cache", "clear"], input="n\n")
         # When user cancels, confirm() aborts with exit code 1
         # But the command might exit cleanly depending on typer version
         mock_cache.clear.assert_not_called()
@@ -257,7 +256,7 @@ class TestInboxCommand:
                 participants=["alice@ex.com"],
                 message_count=3,
                 unread_count=1,
-                latest_date=datetime.now(timezone.utc),
+                latest_date=datetime.now(UTC),
                 snippet="Hello...",
             ),
         ]
@@ -324,9 +323,9 @@ class TestSearchCommand:
                 account="test",
                 folder="INBOX",
                 **{"from": Address(addr="sender@ex.com")},
-                date=datetime.now(timezone.utc),
+                date=datetime.now(UTC),
                 subject="Found message",
-                headers_fetched_at=datetime.now(timezone.utc),
+                headers_fetched_at=datetime.now(UTC),
             ),
         ]
         mock_cache.return_value = cache_instance

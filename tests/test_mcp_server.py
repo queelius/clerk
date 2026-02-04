@@ -1,16 +1,16 @@
 """Tests for MCP server implementation."""
 
 import time
-from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
+from datetime import UTC, datetime
+from unittest.mock import MagicMock
 
 import pytest
 
-from clerk.api import ClerkAPI, InboxResult, SearchResult
+from clerk.api import ClerkAPI
 from clerk.cache import Cache
 from clerk.config import AccountConfig, ClerkConfig, FromAddress, ImapConfig, SmtpConfig
 from clerk.drafts import DraftManager
-from clerk.models import Address, Conversation, ConversationSummary, Draft, Message
+from clerk.models import Address, Message
 
 
 @pytest.fixture
@@ -53,11 +53,11 @@ def sample_message():
         folder="INBOX",
         **{"from": Address(addr="sender@example.com", name="Sender")},
         to=[Address(addr="test@example.com")],
-        date=datetime.now(timezone.utc),
+        date=datetime.now(UTC),
         subject="Test Subject",
         body_text="This is a test message body.",
-        headers_fetched_at=datetime.now(timezone.utc),
-        body_fetched_at=datetime.now(timezone.utc),
+        headers_fetched_at=datetime.now(UTC),
+        body_fetched_at=datetime.now(UTC),
     )
 
 
@@ -135,7 +135,6 @@ class TestConfirmationTokens:
     def test_expired_token(self):
         """Test that expired tokens are rejected."""
         from clerk.mcp_server import (
-            CONFIRMATION_TOKEN_EXPIRY_SECONDS,
             _confirmation_tokens,
             _validate_confirmation_token,
         )
@@ -455,9 +454,9 @@ class TestClerkAttachments:
             account="test",
             folder="INBOX",
             **{"from": Address(addr="sender@example.com")},
-            date=datetime.now(timezone.utc),
+            date=datetime.now(UTC),
             subject="With Attachment",
-            headers_fetched_at=datetime.now(timezone.utc),
+            headers_fetched_at=datetime.now(UTC),
             attachments=[
                 {"filename": "doc.pdf", "size": 1024, "content_type": "application/pdf"},
             ],

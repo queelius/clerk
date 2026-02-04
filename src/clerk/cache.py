@@ -2,13 +2,13 @@
 
 import json
 import sqlite3
+from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
-from .config import get_config, get_data_dir
-from .search import SearchQuery, build_fts_query, build_where_clauses, parse_search_query
+from .config import get_data_dir
 from .models import (
     Address,
     Attachment,
@@ -18,7 +18,7 @@ from .models import (
     Message,
     MessageFlag,
 )
-
+from .search import SearchQuery, build_fts_query, build_where_clauses, parse_search_query
 
 SCHEMA = """
 -- Core message storage
@@ -210,7 +210,7 @@ class Cache:
                     json.dumps([a.model_dump() for a in msg.attachments]),
                     msg.in_reply_to,
                     json.dumps(msg.references),
-                    (msg.headers_fetched_at or datetime.now(timezone.utc)).isoformat(),
+                    (msg.headers_fetched_at or datetime.now(UTC)).isoformat(),
                     msg.body_fetched_at.isoformat() if msg.body_fetched_at else None,
                 ),
             )
@@ -461,10 +461,7 @@ class Cache:
             List of matching messages
         """
         # Parse query if it's a string
-        if isinstance(query, str):
-            parsed = parse_search_query(query)
-        else:
-            parsed = query
+        parsed = parse_search_query(query) if isinstance(query, str) else query
 
         with self._connect() as conn:
             # Build FTS query for text-based searches
@@ -554,10 +551,7 @@ class Cache:
             if "LIMIT" not in sql_upper:
                 sql = f"{sql.rstrip(';')} LIMIT {limit}"
 
-            if params:
-                rows = conn.execute(sql, params).fetchall()
-            else:
-                rows = conn.execute(sql).fetchall()
+            rows = conn.execute(sql, params).fetchall() if params else conn.execute(sql).fetchall()
 
             return [self._row_to_message(row) for row in rows]
 
@@ -580,7 +574,7 @@ class Cache:
                 SET body_text = ?, body_html = ?, body_fetched_at = ?
                 WHERE message_id = ?
                 """,
-                (body_text, body_html, datetime.now(timezone.utc).isoformat(), message_id),
+                (body_text, body_html, datetime.now(UTC).isoformat(), message_id),
             )
 
     def move_message(self, message_id: str, folder: str) -> None:
@@ -618,7 +612,7 @@ class Cache:
                     return False
                 fetched_at = datetime.fromisoformat(row["headers_fetched_at"])
 
-            return datetime.now(timezone.utc) - fetched_at < timedelta(minutes=freshness_minutes)
+            return datetime.now(UTC) - fetched_at < timedelta(minutes=freshness_minutes)
 
     def is_inbox_fresh(self, account: str, freshness_minutes: int = 5) -> bool:
         """Check if inbox listing is fresh enough."""
@@ -630,19 +624,19 @@ class Cache:
             if not row:
                 return False
             synced_at = datetime.fromisoformat(row["value"])
-            return datetime.now(timezone.utc) - synced_at < timedelta(minutes=freshness_minutes)
+            return datetime.now(UTC) - synced_at < timedelta(minutes=freshness_minutes)
 
     def mark_inbox_synced(self, account: str) -> None:
         """Mark inbox as synced."""
         with self._connect() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO cache_meta (key, value) VALUES (?, ?)",
-                (f"inbox_sync_{account}", datetime.now(timezone.utc).isoformat()),
+                (f"inbox_sync_{account}", datetime.now(UTC).isoformat()),
             )
 
     def prune_old_messages(self, window_days: int = 7) -> int:
         """Remove messages older than the cache window. Returns count deleted."""
-        cutoff = datetime.now(timezone.utc) - timedelta(days=window_days)
+        cutoff = datetime.now(UTC) - timedelta(days=window_days)
         with self._connect() as conn:
             cursor = conn.execute(
                 "DELETE FROM messages WHERE date_utc < ?", (cutoff.isoformat(),)
@@ -706,7 +700,7 @@ class Cache:
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    datetime.now(timezone.utc).isoformat(),
+                    datetime.now(UTC).isoformat(),
                     account,
                     json.dumps([a.model_dump() for a in to]),
                     json.dumps([a.model_dump() for a in cc]),

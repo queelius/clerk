@@ -3,8 +3,7 @@
 import json
 import secrets
 import sqlite3
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import UTC, datetime
 
 from .cache import get_cache
 from .config import get_config, get_data_dir
@@ -42,7 +41,7 @@ class DraftManager:
     ) -> Draft:
         """Create a new draft."""
         draft_id = generate_draft_id()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         draft = Draft(
             draft_id=draft_id,
@@ -162,7 +161,7 @@ class DraftManager:
 
     def update(self, draft: Draft) -> None:
         """Update an existing draft."""
-        draft.updated_at = datetime.now(timezone.utc)
+        draft.updated_at = datetime.now(UTC)
         self._save(draft)
 
     def delete(self, draft_id: str) -> bool:

@@ -1,5 +1,6 @@
 """Configuration loading and validation for clerk."""
 
+import contextlib
 import os
 import subprocess
 from pathlib import Path
@@ -7,7 +8,7 @@ from typing import Literal
 
 import keyring
 import yaml
-from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
+from pydantic import BaseModel, EmailStr, Field, model_validator
 
 
 def get_config_dir() -> Path:
@@ -218,10 +219,8 @@ def save_password(account_name: str, password: str) -> None:
 
 def delete_password(account_name: str) -> None:
     """Delete password from system keyring."""
-    try:
+    with contextlib.suppress(keyring.errors.PasswordDeleteError):
         keyring.delete_password("clerk", account_name)
-    except keyring.errors.PasswordDeleteError:
-        pass  # Password didn't exist
 
 
 def get_oauth_token(account_name: str) -> str | None:
@@ -244,10 +243,8 @@ def save_oauth_token(account_name: str, token_json: str) -> None:
 
 def delete_oauth_token(account_name: str) -> None:
     """Delete OAuth token from keyring."""
-    try:
+    with contextlib.suppress(keyring.errors.PasswordDeleteError):
         keyring.delete_password("clerk-oauth", account_name)
-    except keyring.errors.PasswordDeleteError:
-        pass  # Token didn't exist
 
 
 def save_config(config: ClerkConfig, config_path: Path | None = None) -> None:

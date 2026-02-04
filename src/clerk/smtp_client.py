@@ -3,18 +3,16 @@
 import asyncio
 import time
 from collections import deque
-from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr, formatdate, make_msgid
-from typing import Any
 
 import aiosmtplib
 
 from .cache import get_cache
 from .config import AccountConfig, get_config
 from .drafts import get_draft_manager
-from .models import Address, Draft, ExitCode, SendResult
+from .models import Draft, SendResult
 
 
 class RateLimiter:
@@ -115,7 +113,7 @@ class SmtpClient:
         message_id = msg["Message-ID"]
 
         # Get all recipients
-        all_recipients = [a.addr for a in draft.to + draft.cc + draft.bcc]
+        [a.addr for a in draft.to + draft.cc + draft.bcc]
 
         try:
             if self.config.protocol == "gmail":
@@ -196,14 +194,14 @@ def check_send_allowed(draft: Draft, account_name: str) -> tuple[bool, str | Non
         return False, f"Rate limit exceeded. {limiter.remaining()} sends remaining this hour."
 
     # Check blocked recipients
-    blocked = set(addr.lower() for addr in config.send.blocked_recipients)
+    blocked = {addr.lower() for addr in config.send.blocked_recipients}
     for addr in draft.to + draft.cc + draft.bcc:
         if addr.addr.lower() in blocked:
             return False, f"Recipient {addr.addr} is blocked"
 
     # Check FROM matches account
     _, account_config = config.get_account(account_name)
-    expected_from = account_config.from_.address.lower()
+    account_config.from_.address.lower()
 
     # This check happens at send time, but draft.account should match
     if draft.account != account_name:

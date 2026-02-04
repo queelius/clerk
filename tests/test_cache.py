@@ -1,8 +1,6 @@
 """Tests for clerk cache."""
 
-import tempfile
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -28,15 +26,15 @@ def sample_message():
         **{"from": Address(addr="sender@example.com", name="Sender Name")},
         to=[Address(addr="recipient@example.com", name="Recipient")],
         cc=[],
-        date=datetime.now(timezone.utc),
+        date=datetime.now(UTC),
         subject="Test Subject",
         body_text="This is the body text",
         body_html="<p>This is the body text</p>",
         flags=[MessageFlag.SEEN],
         in_reply_to=None,
         references=[],
-        headers_fetched_at=datetime.now(timezone.utc),
-        body_fetched_at=datetime.now(timezone.utc),
+        headers_fetched_at=datetime.now(UTC),
+        body_fetched_at=datetime.now(UTC),
     )
 
 
@@ -81,7 +79,7 @@ class TestCacheConversations:
             subject="Thread subject",
             body_text="First message",
             flags=[MessageFlag.SEEN],
-            headers_fetched_at=datetime.now(timezone.utc),
+            headers_fetched_at=datetime.now(UTC),
         )
         msg2 = Message(
             message_id="<msg2@example.com>",
@@ -94,7 +92,7 @@ class TestCacheConversations:
             subject="Re: Thread subject",
             body_text="Second message",
             flags=[],
-            headers_fetched_at=datetime.now(timezone.utc),
+            headers_fetched_at=datetime.now(UTC),
         )
 
         cache.store_message(msg1)
@@ -127,7 +125,7 @@ class TestCacheConversations:
                 subject=f"Subject {i}",
                 body_text=f"Body {i}",
                 flags=[MessageFlag.SEEN] if i % 2 == 0 else [],
-                headers_fetched_at=datetime.now(timezone.utc),
+                headers_fetched_at=datetime.now(UTC),
             )
             cache.store_message(msg)
 
@@ -144,9 +142,9 @@ class TestCacheConversations:
             account="test",
             folder="INBOX",
             **{"from": Address(addr="a@example.com")},
-            date=datetime.now(timezone.utc),
+            date=datetime.now(UTC),
             flags=[MessageFlag.SEEN],
-            headers_fetched_at=datetime.now(timezone.utc),
+            headers_fetched_at=datetime.now(UTC),
         )
         msg_unread = Message(
             message_id="<unread@example.com>",
@@ -154,9 +152,9 @@ class TestCacheConversations:
             account="test",
             folder="INBOX",
             **{"from": Address(addr="b@example.com")},
-            date=datetime.now(timezone.utc),
+            date=datetime.now(UTC),
             flags=[],
-            headers_fetched_at=datetime.now(timezone.utc),
+            headers_fetched_at=datetime.now(UTC),
         )
 
         cache.store_message(msg_read)
@@ -202,9 +200,9 @@ class TestCacheSearch:
             account="account1",
             folder="INBOX",
             **{"from": Address(addr="a@example.com")},
-            date=datetime.now(timezone.utc),
+            date=datetime.now(UTC),
             subject="Common keyword",
-            headers_fetched_at=datetime.now(timezone.utc),
+            headers_fetched_at=datetime.now(UTC),
         )
         msg2 = Message(
             message_id="<msg2@example.com>",
@@ -212,9 +210,9 @@ class TestCacheSearch:
             account="account2",
             folder="INBOX",
             **{"from": Address(addr="b@example.com")},
-            date=datetime.now(timezone.utc),
+            date=datetime.now(UTC),
             subject="Common keyword",
-            headers_fetched_at=datetime.now(timezone.utc),
+            headers_fetched_at=datetime.now(UTC),
         )
 
         cache.store_message(msg1)
@@ -245,9 +243,9 @@ class TestCacheBody:
             account="test",
             folder="INBOX",
             **{"from": Address(addr="a@example.com")},
-            date=datetime.now(timezone.utc),
+            date=datetime.now(UTC),
             body_text=None,  # Body not fetched yet
-            headers_fetched_at=datetime.now(timezone.utc),
+            headers_fetched_at=datetime.now(UTC),
         )
         cache.store_message(msg)
 
@@ -277,8 +275,8 @@ class TestCachePruning:
             account="test",
             folder="INBOX",
             **{"from": Address(addr="a@example.com")},
-            date=datetime.now(timezone.utc) - timedelta(days=10),
-            headers_fetched_at=datetime.now(timezone.utc),
+            date=datetime.now(UTC) - timedelta(days=10),
+            headers_fetched_at=datetime.now(UTC),
         )
         new_msg = Message(
             message_id="<new@example.com>",
@@ -286,8 +284,8 @@ class TestCachePruning:
             account="test",
             folder="INBOX",
             **{"from": Address(addr="b@example.com")},
-            date=datetime.now(timezone.utc),
-            headers_fetched_at=datetime.now(timezone.utc),
+            date=datetime.now(UTC),
+            headers_fetched_at=datetime.now(UTC),
         )
 
         cache.store_message(old_msg)
@@ -335,7 +333,7 @@ class TestPrefixMatching:
             subject="Test Subject",
             body_text="Body text",
             flags=[MessageFlag.SEEN],
-            headers_fetched_at=datetime.now(timezone.utc),
+            headers_fetched_at=datetime.now(UTC),
         )
         cache.store_message(msg)
 
@@ -356,7 +354,7 @@ class TestPrefixMatching:
             date=datetime(2025, 1, 1, 10, 0, 0),
             subject="First Subject",
             flags=[],
-            headers_fetched_at=datetime.now(timezone.utc),
+            headers_fetched_at=datetime.now(UTC),
         )
         msg2 = Message(
             message_id="<msg2@example.com>",
@@ -367,7 +365,7 @@ class TestPrefixMatching:
             date=datetime(2025, 1, 2, 10, 0, 0),
             subject="Second Subject",
             flags=[MessageFlag.SEEN],
-            headers_fetched_at=datetime.now(timezone.utc),
+            headers_fetched_at=datetime.now(UTC),
         )
 
         cache.store_message(msg1)
@@ -388,9 +386,9 @@ class TestPrefixMatching:
             account="test",
             folder="INBOX",
             **{"from": Address(addr="alice@example.com")},
-            date=datetime.now(timezone.utc),
+            date=datetime.now(UTC),
             flags=[],
-            headers_fetched_at=datetime.now(timezone.utc),
+            headers_fetched_at=datetime.now(UTC),
         )
         cache.store_message(msg)
 
@@ -407,7 +405,7 @@ class TestPrefixMatching:
             **{"from": Address(addr="alice@example.com")},
             date=datetime(2025, 1, 1, 10, 0, 0),
             flags=[],
-            headers_fetched_at=datetime.now(timezone.utc),
+            headers_fetched_at=datetime.now(UTC),
         )
         msg2 = Message(
             message_id="<msg2@example.com>",
@@ -417,7 +415,7 @@ class TestPrefixMatching:
             **{"from": Address(addr="bob@example.com")},
             date=datetime(2025, 1, 2, 10, 0, 0),
             flags=[],
-            headers_fetched_at=datetime.now(timezone.utc),
+            headers_fetched_at=datetime.now(UTC),
         )
 
         cache.store_message(msg1)
@@ -440,7 +438,7 @@ class TestPrefixMatching:
             subject="Test Subject",
             body_text="Body text",
             flags=[],
-            headers_fetched_at=datetime.now(timezone.utc),
+            headers_fetched_at=datetime.now(UTC),
         )
         cache.store_message(msg)
 
@@ -460,7 +458,7 @@ class TestPrefixMatching:
             **{"from": Address(addr="alice@example.com")},
             date=datetime(2025, 1, 1, 10, 0, 0),
             flags=[],
-            headers_fetched_at=datetime.now(timezone.utc),
+            headers_fetched_at=datetime.now(UTC),
         )
         msg2 = Message(
             message_id="<msg2@example.com>",
@@ -470,7 +468,7 @@ class TestPrefixMatching:
             **{"from": Address(addr="bob@example.com")},
             date=datetime(2025, 1, 2, 10, 0, 0),
             flags=[],
-            headers_fetched_at=datetime.now(timezone.utc),
+            headers_fetched_at=datetime.now(UTC),
         )
 
         cache.store_message(msg1)
@@ -500,7 +498,7 @@ class TestPrefixMatching:
             date=datetime(2025, 1, 1, 10, 0, 0),
             subject="Exact Match",
             flags=[],
-            headers_fetched_at=datetime.now(timezone.utc),
+            headers_fetched_at=datetime.now(UTC),
         )
         cache.store_message(msg)
 
@@ -517,9 +515,9 @@ class TestPrefixMatching:
             account="test",
             folder="INBOX",
             **{"from": Address(addr="alice@example.com")},
-            date=datetime.now(timezone.utc),
+            date=datetime.now(UTC),
             flags=[],
-            headers_fetched_at=datetime.now(timezone.utc),
+            headers_fetched_at=datetime.now(UTC),
         )
         cache.store_message(msg)
 
@@ -538,7 +536,7 @@ class TestPrefixMatching:
             subject="Original Subject",
             body_text="First message body",
             flags=[],
-            headers_fetched_at=datetime.now(timezone.utc),
+            headers_fetched_at=datetime.now(UTC),
         )
         msg2 = Message(
             message_id="<msg2@example.com>",
@@ -551,7 +549,7 @@ class TestPrefixMatching:
             subject="Re: Original Subject",
             body_text="Reply body",
             flags=[MessageFlag.SEEN],
-            headers_fetched_at=datetime.now(timezone.utc),
+            headers_fetched_at=datetime.now(UTC),
         )
 
         cache.store_message(msg1)

@@ -9,8 +9,8 @@ Provides a readline-like experience using prompt_toolkit with:
 
 import json
 import shlex
-from pathlib import Path
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer, Completion
@@ -20,8 +20,6 @@ from prompt_toolkit.styles import Style
 from . import __version__
 from .api import ClerkAPI, get_api
 from .config import ensure_dirs, get_data_dir
-from .models import MessageFlag
-
 
 # Shell styling
 STYLE = Style.from_dict({

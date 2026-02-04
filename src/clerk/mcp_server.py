@@ -1,17 +1,13 @@
 """MCP Server for clerk - Model Context Protocol integration for LLM agents."""
 
-import hashlib
 import secrets
 import time
-from datetime import datetime
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from . import __version__
-from .api import ClerkAPI, get_api
+from .api import get_api
 from .config import ensure_dirs
-from .models import Address
 
 # Create the MCP server
 mcp = FastMCP(name="clerk")
@@ -377,8 +373,7 @@ def clerk_delete_draft(draft_id: str) -> dict[str, Any]:
 
     if api.delete_draft(draft_id):
         # Also cleanup any pending confirmation token
-        if draft_id in _confirmation_tokens:
-            del _confirmation_tokens[draft_id]
+        _confirmation_tokens.pop(draft_id, None)
 
         return {"status": "deleted", "draft_id": draft_id}
     else:

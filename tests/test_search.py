@@ -1,12 +1,9 @@
 """Tests for the search query parser."""
 
-from datetime import datetime, timedelta, timezone
-
-import pytest
+from datetime import UTC, datetime, timedelta
 
 from clerk.search import (
     SearchQuery,
-    Token,
     TokenType,
     build_fts_query,
     build_where_clauses,
@@ -118,7 +115,7 @@ class TestParseDate:
     def test_today(self):
         result = parse_date("today")
         assert result is not None
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         assert result.year == now.year
         assert result.month == now.month
         assert result.day == now.day
@@ -126,7 +123,7 @@ class TestParseDate:
     def test_yesterday(self):
         result = parse_date("yesterday")
         assert result is not None
-        yesterday = datetime.now(timezone.utc) - timedelta(days=1)
+        yesterday = datetime.now(UTC) - timedelta(days=1)
         assert result.year == yesterday.year
         assert result.month == yesterday.month
         assert result.day == yesterday.day
@@ -134,20 +131,20 @@ class TestParseDate:
     def test_relative_days(self):
         result = parse_date("7d")
         assert result is not None
-        expected = datetime.now(timezone.utc) - timedelta(days=7)
+        expected = datetime.now(UTC) - timedelta(days=7)
         # Allow 1 second tolerance
         assert abs((result - expected).total_seconds()) < 1
 
     def test_relative_weeks(self):
         result = parse_date("2w")
         assert result is not None
-        expected = datetime.now(timezone.utc) - timedelta(weeks=2)
+        expected = datetime.now(UTC) - timedelta(weeks=2)
         assert abs((result - expected).total_seconds()) < 1
 
     def test_relative_months(self):
         result = parse_date("1m")
         assert result is not None
-        expected = datetime.now(timezone.utc) - timedelta(days=30)
+        expected = datetime.now(UTC) - timedelta(days=30)
         assert abs((result - expected).total_seconds()) < 1
 
     def test_invalid_date(self):
@@ -292,43 +289,43 @@ class TestBuildWhereClauses:
 
     def test_has_attachment(self):
         query = SearchQuery(has_attachment=True)
-        clauses, params = build_where_clauses(query)
+        clauses, _params = build_where_clauses(query)
         assert "attachments_json != '[]'" in clauses[0]
 
     def test_no_attachment(self):
         query = SearchQuery(has_attachment=False)
-        clauses, params = build_where_clauses(query)
+        clauses, _params = build_where_clauses(query)
         assert "attachments_json = '[]'" in clauses[0]
 
     def test_is_read(self):
         query = SearchQuery(is_read=True)
-        clauses, params = build_where_clauses(query)
+        clauses, _params = build_where_clauses(query)
         assert "flags LIKE '%\"seen\"%'" in clauses[0]
 
     def test_is_unread(self):
         query = SearchQuery(is_unread=True)
-        clauses, params = build_where_clauses(query)
+        clauses, _params = build_where_clauses(query)
         assert "flags NOT LIKE '%\"seen\"%'" in clauses[0]
 
     def test_is_flagged(self):
         query = SearchQuery(is_flagged=True)
-        clauses, params = build_where_clauses(query)
+        clauses, _params = build_where_clauses(query)
         assert "flags LIKE '%\"flagged\"%'" in clauses[0]
 
     def test_after_date(self):
-        query = SearchQuery(after_date=datetime(2025, 1, 1, tzinfo=timezone.utc))
+        query = SearchQuery(after_date=datetime(2025, 1, 1, tzinfo=UTC))
         clauses, params = build_where_clauses(query)
         assert "date_utc >=" in clauses[0]
         assert "2025-01-01" in params[0]
 
     def test_before_date(self):
-        query = SearchQuery(before_date=datetime(2025, 12, 31, tzinfo=timezone.utc))
+        query = SearchQuery(before_date=datetime(2025, 12, 31, tzinfo=UTC))
         clauses, params = build_where_clauses(query)
         assert "date_utc <" in clauses[0]
         assert "2025-12-31" in params[0]
 
     def test_on_date(self):
-        query = SearchQuery(on_date=datetime(2025, 6, 15, tzinfo=timezone.utc))
+        query = SearchQuery(on_date=datetime(2025, 6, 15, tzinfo=UTC))
         clauses, params = build_where_clauses(query)
         assert "date_utc >=" in clauses[0]
         assert "date_utc <=" in clauses[0]
@@ -361,5 +358,5 @@ class TestSearchQueryIsEmpty:
         assert query.is_empty() is False
 
     def test_with_date(self):
-        query = SearchQuery(after_date=datetime.now(timezone.utc))
+        query = SearchQuery(after_date=datetime.now(UTC))
         assert query.is_empty() is False

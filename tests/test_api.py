@@ -1,16 +1,15 @@
 """Tests for ClerkAPI."""
 
-from datetime import datetime, timezone
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from datetime import UTC, datetime
+from unittest.mock import MagicMock
 
 import pytest
 
-from clerk.api import ClerkAPI, ConversationLookupResult, InboxResult, SearchResult, get_api
+from clerk.api import ClerkAPI, InboxResult, SearchResult, get_api
 from clerk.cache import Cache
 from clerk.config import AccountConfig, ClerkConfig, FromAddress, ImapConfig, SmtpConfig
 from clerk.drafts import DraftManager
-from clerk.models import Address, ConversationSummary, Message, MessageFlag
+from clerk.models import Address, Message
 
 
 @pytest.fixture
@@ -53,11 +52,11 @@ def sample_message():
         folder="INBOX",
         **{"from": Address(addr="sender@example.com", name="Sender")},
         to=[Address(addr="test@example.com")],
-        date=datetime.now(timezone.utc),
+        date=datetime.now(UTC),
         subject="Test Subject",
         body_text="This is a test message body.",
-        headers_fetched_at=datetime.now(timezone.utc),
-        body_fetched_at=datetime.now(timezone.utc),
+        headers_fetched_at=datetime.now(UTC),
+        body_fetched_at=datetime.now(UTC),
     )
 
 
@@ -294,9 +293,9 @@ class TestAttachments:
             account="test",
             folder="INBOX",
             **{"from": Address(addr="sender@example.com")},
-            date=datetime.now(timezone.utc),
+            date=datetime.now(UTC),
             subject="With Attachment",
-            headers_fetched_at=datetime.now(timezone.utc),
+            headers_fetched_at=datetime.now(UTC),
             attachments=[
                 {"filename": "doc.pdf", "size": 1024, "content_type": "application/pdf"},
             ],
@@ -347,11 +346,11 @@ class TestResolveConversationId:
             account="test",
             folder="INBOX",
             **{"from": Address(addr="alice@example.com")},
-            date=datetime.now(timezone.utc),
+            date=datetime.now(UTC),
             subject="Test Subject",
             body_text="Body text",
-            headers_fetched_at=datetime.now(timezone.utc),
-            body_fetched_at=datetime.now(timezone.utc),
+            headers_fetched_at=datetime.now(UTC),
+            body_fetched_at=datetime.now(UTC),
         )
         cache.store_message(msg)
 
@@ -370,9 +369,9 @@ class TestResolveConversationId:
             account="test",
             folder="INBOX",
             **{"from": Address(addr="alice@example.com")},
-            date=datetime(2025, 1, 1, 10, 0, 0, tzinfo=timezone.utc),
+            date=datetime(2025, 1, 1, 10, 0, 0, tzinfo=UTC),
             subject="First Subject",
-            headers_fetched_at=datetime.now(timezone.utc),
+            headers_fetched_at=datetime.now(UTC),
         )
         msg2 = Message(
             message_id="<msg2@example.com>",
@@ -380,9 +379,9 @@ class TestResolveConversationId:
             account="test",
             folder="INBOX",
             **{"from": Address(addr="bob@example.com")},
-            date=datetime(2025, 1, 2, 10, 0, 0, tzinfo=timezone.utc),
+            date=datetime(2025, 1, 2, 10, 0, 0, tzinfo=UTC),
             subject="Second Subject",
-            headers_fetched_at=datetime.now(timezone.utc),
+            headers_fetched_at=datetime.now(UTC),
         )
         cache.store_message(msg1)
         cache.store_message(msg2)
@@ -402,8 +401,8 @@ class TestResolveConversationId:
             account="test",
             folder="INBOX",
             **{"from": Address(addr="alice@example.com")},
-            date=datetime.now(timezone.utc),
-            headers_fetched_at=datetime.now(timezone.utc),
+            date=datetime.now(UTC),
+            headers_fetched_at=datetime.now(UTC),
         )
         cache.store_message(msg)
 
@@ -422,11 +421,11 @@ class TestResolveConversationId:
             account="test",
             folder="INBOX",
             **{"from": Address(addr="alice@example.com")},
-            date=datetime.now(timezone.utc),
+            date=datetime.now(UTC),
             subject="Test",
             body_text="Body",
-            headers_fetched_at=datetime.now(timezone.utc),
-            body_fetched_at=datetime.now(timezone.utc),
+            headers_fetched_at=datetime.now(UTC),
+            body_fetched_at=datetime.now(UTC),
         )
         cache.store_message(msg)
 

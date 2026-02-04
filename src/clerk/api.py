@@ -4,7 +4,7 @@ This module provides a unified API that both the CLI and MCP server use.
 All email operations go through this layer to ensure consistent behavior.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -24,7 +24,7 @@ from .models import (
     MessageFlag,
     UnreadCounts,
 )
-from .search import SearchQuery, parse_search_query
+from .search import SearchQuery
 from .smtp_client import SendResult, check_send_allowed, send_draft
 
 
@@ -151,7 +151,7 @@ class ClerkAPI:
         Returns:
             InboxResult with list of conversation summaries
         """
-        account_name, account_config = self.config.get_account(account)
+        account_name, _account_config = self.config.get_account(account)
 
         # Check cache freshness
         if not fresh and self.cache.is_inbox_fresh(
@@ -220,19 +220,18 @@ class ClerkAPI:
         if conv:
             # Fetch bodies if needed
             for msg in conv.messages:
-                if msg.body_text is None:
-                    if fresh or not self.cache.is_fresh(
-                        msg.message_id,
-                        self.config.cache.body_freshness_min,
-                        check_body=True,
-                    ):
-                        with get_imap_client(msg.account) as client:
-                            body_text, body_html = client.fetch_message_body(
-                                msg.folder, msg.message_id
-                            )
-                            self.cache.update_body(msg.message_id, body_text, body_html)
-                            msg.body_text = body_text
-                            msg.body_html = body_html
+                if msg.body_text is None and (fresh or not self.cache.is_fresh(
+                    msg.message_id,
+                    self.config.cache.body_freshness_min,
+                    check_body=True,
+                )):
+                    with get_imap_client(msg.account) as client:
+                        body_text, body_html = client.fetch_message_body(
+                            msg.folder, msg.message_id
+                        )
+                        self.cache.update_body(msg.message_id, body_text, body_html)
+                        msg.body_text = body_text
+                        msg.body_html = body_html
 
         return conv
 
@@ -248,17 +247,16 @@ class ClerkAPI:
         """
         msg = self.cache.get_message(message_id)
 
-        if msg and msg.body_text is None:
-            if fresh or not self.cache.is_fresh(
-                msg.message_id, self.config.cache.body_freshness_min, check_body=True
-            ):
-                with get_imap_client(msg.account) as client:
-                    body_text, body_html = client.fetch_message_body(
-                        msg.folder, msg.message_id
-                    )
-                    self.cache.update_body(msg.message_id, body_text, body_html)
-                    msg.body_text = body_text
-                    msg.body_html = body_html
+        if msg and msg.body_text is None and (fresh or not self.cache.is_fresh(
+            msg.message_id, self.config.cache.body_freshness_min, check_body=True
+        )):
+            with get_imap_client(msg.account) as client:
+                body_text, body_html = client.fetch_message_body(
+                    msg.folder, msg.message_id
+                )
+                self.cache.update_body(msg.message_id, body_text, body_html)
+                msg.body_text = body_text
+                msg.body_html = body_html
 
         return msg
 

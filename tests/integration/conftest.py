@@ -2,9 +2,8 @@
 
 import socket
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from email.message import EmailMessage
-from pathlib import Path
 from smtplib import SMTP
 
 import pytest
@@ -30,7 +29,7 @@ def wait_for_port(host: str, port: int, timeout: float = 30.0) -> bool:
         try:
             with socket.create_connection((host, port), timeout=1):
                 return True
-        except (socket.error, socket.timeout):
+        except (TimeoutError, OSError):
             time.sleep(0.5)
     return False
 
@@ -142,7 +141,7 @@ def send_test_email(
     msg["From"] = from_addr or f"sender@{greenmail_server['host']}"
     msg["To"] = to
     msg["Subject"] = subject
-    msg["Date"] = datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S %z")
+    msg["Date"] = datetime.now(UTC).strftime("%a, %d %b %Y %H:%M:%S %z")
     msg.set_content(body)
 
     # Add attachments

@@ -1,11 +1,12 @@
 """IMAP client for fetching email."""
 
+import contextlib
 import email
 import email.header
 import email.utils
 import hashlib
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime
 from email.message import Message as EmailMessage
 from typing import Any
 
@@ -117,10 +118,7 @@ def extract_attachments(msg: EmailMessage) -> list[Attachment]:
             content_disp = str(part.get("Content-Disposition", ""))
             if "attachment" in content_disp:
                 filename = part.get_filename()
-                if filename:
-                    filename = decode_header_value(filename)
-                else:
-                    filename = "unnamed"
+                filename = decode_header_value(filename) if filename else "unnamed"
 
                 payload = part.get_payload(decode=True)
                 size = len(payload) if payload else 0
@@ -217,7 +215,7 @@ class ImapClient:
 
     def _connect_gmail(self) -> None:
         """Connect to Gmail using OAuth2 XOAUTH2 authentication."""
-        from .oauth import get_gmail_credentials, get_oauth2_string
+        from .oauth import get_gmail_credentials
 
         oauth_config = self.config.oauth
         if not oauth_config:
@@ -239,10 +237,8 @@ class ImapClient:
     def disconnect(self) -> None:
         """Disconnect from the IMAP server."""
         if self._client:
-            try:
+            with contextlib.suppress(Exception):
                 self._client.logout()
-            except Exception:
-                pass
             self._client = None
 
     def __enter__(self) -> "ImapClient":
@@ -345,7 +341,7 @@ class ImapClient:
         fetch_data = self.client.fetch(message_ids, fetch_items)
 
         messages = []
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         for uid, data in fetch_data.items():
             try:
@@ -378,7 +374,7 @@ class ImapClient:
         if date:
             date = date.replace(tzinfo=None) if date.tzinfo else date
         else:
-            date = data.get(b"INTERNALDATE", datetime.now(timezone.utc))
+            date = data.get(b"INTERNALDATE", datetime.now(UTC))
 
         subject = decode_header_value(envelope.subject) if envelope.subject else ""
 
@@ -406,10 +402,7 @@ class ImapClient:
         in_reply_to = None
         references: list[str] = []
 
-        if has_body:
-            raw = data.get(b"BODY[]") or data.get(b"RFC822")
-        else:
-            raw = data.get(b"BODY[HEADER]")
+        raw = data.get(b"BODY[]") or data.get(b"RFC822") if has_body else data.get(b"BODY[HEADER]")
 
         body_text = None
         body_html = None
@@ -469,7 +462,6 @@ class ImapClient:
         self.client.select_folder(folder, readonly=True)
 
         # Check if this is a synthetic message_id (e.g., <123@local>)
-        import re
         synthetic_match = re.match(r"<(\d+)@local>", message_id)
         if synthetic_match:
             # Fetch directly by UID
@@ -512,7 +504,6 @@ class ImapClient:
         self.client.select_folder(folder, readonly=True)
 
         # Check if this is a synthetic message_id (e.g., <123@local>)
-        import re
         synthetic_match = re.match(r"<(\d+)@local>", message_id)
         if synthetic_match:
             # Fetch directly by UID

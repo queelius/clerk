@@ -1,6 +1,5 @@
 """Integration tests for inbox operations with Greenmail."""
 
-import pytest
 
 
 class TestInbox:
@@ -16,7 +15,7 @@ class TestInbox:
     def test_list_inbox_fresh(self, api_with_greenmail, populated_mailbox):
         """Test fresh inbox fetch bypasses cache."""
         # First fetch
-        result1 = api_with_greenmail.list_inbox(limit=10)
+        api_with_greenmail.list_inbox(limit=10)
 
         # Fresh fetch
         result2 = api_with_greenmail.list_inbox(limit=10, fresh=True)

@@ -89,11 +89,10 @@ def thread_messages(messages: list[Message]) -> list[Conversation]:
             parent_node = ref_node
 
         # Link this message to its parent
-        if parent_node is not None and parent_node != node:
-            if node.parent is None:
-                node.parent = parent_node
-                if node not in parent_node.children:
-                    parent_node.children.append(node)
+        if parent_node is not None and parent_node != node and node.parent is None:
+            node.parent = parent_node
+            if node not in parent_node.children:
+                parent_node.children.append(node)
 
     # Step 2: Find root nodes (nodes with no parent)
     roots: list[ThreadNode] = []
@@ -149,11 +148,7 @@ def thread_messages(messages: list[Message]) -> list[Conversation]:
         root_id = root.message_id
         conv_id = compute_conv_id(root_id)
 
-        # Update conv_id on all messages
-        for msg in thread_messages:
-            # Create a new message with updated conv_id
-            # (since Message is a Pydantic model, we should use model copy)
-            pass  # conv_id is already set during fetch
+        # conv_id is already set during fetch; no per-message update needed
 
         conversations.append(
             Conversation(

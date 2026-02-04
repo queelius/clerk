@@ -1,7 +1,5 @@
 """Tests for clerk configuration."""
 
-import tempfile
-from pathlib import Path
 
 import pytest
 import yaml
@@ -12,7 +10,6 @@ from clerk.config import (
     ClerkConfig,
     FromAddress,
     ImapConfig,
-    OAuthConfig,
     SendConfig,
     SmtpConfig,
     load_config,

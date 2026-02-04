@@ -18,7 +18,7 @@ Free text is matched against subject, body, from_name, and from_addr.
 
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
@@ -206,9 +206,9 @@ def parse_date(date_str: str) -> datetime | None:
     date_str = date_str.strip().lower()
 
     # Handle special keywords
-    from datetime import timedelta, timezone
+    from datetime import timedelta
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     if date_str == "today":
         return now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -241,7 +241,7 @@ def parse_date(date_str: str) -> datetime | None:
 
     for fmt in formats:
         try:
-            return datetime.strptime(date_str, fmt).replace(tzinfo=timezone.utc)
+            return datetime.strptime(date_str, fmt).replace(tzinfo=UTC)
         except ValueError:
             continue
 

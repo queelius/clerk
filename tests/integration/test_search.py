@@ -1,6 +1,5 @@
 """Integration tests for search operations with Greenmail."""
 
-import pytest
 
 from clerk.search import parse_search_query
 

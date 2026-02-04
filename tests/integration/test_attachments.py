@@ -1,6 +1,5 @@
 """Integration tests for attachment operations with Greenmail."""
 
-import pytest
 
 from tests.integration.conftest import send_test_email
 
@@ -84,9 +83,9 @@ class TestAttachments:
         result = api_with_greenmail.list_inbox(limit=10, fresh=True)
 
         # Just verify the message arrived
-        found = any("Binary Attachment" in conv.subject for conv in result.conversations)
+        any("Binary Attachment" in conv.subject for conv in result.conversations)
         # May not find if cache timing issues
-        assert found or True  # Soft assertion for integration test
+        assert True  # Soft assertion for integration test
 
     def test_multiple_attachments(self, api_with_greenmail, greenmail_server):
         """Test message with multiple attachments."""
@@ -106,5 +105,5 @@ class TestAttachments:
         result = api_with_greenmail.list_inbox(limit=10, fresh=True)
 
         # Verify message arrived
-        found = any("Multiple Attachments" in conv.subject for conv in result.conversations)
-        assert found or True  # Soft assertion
+        any("Multiple Attachments" in conv.subject for conv in result.conversations)
+        assert True  # Soft assertion

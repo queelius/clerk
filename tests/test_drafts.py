@@ -1,14 +1,11 @@
 """Tests for draft management."""
 
-import tempfile
-from datetime import datetime, timezone
-from pathlib import Path
-from unittest.mock import patch
+from datetime import UTC, datetime
 
 import pytest
 
 from clerk.drafts import DraftManager, generate_draft_id
-from clerk.models import Address, Draft
+from clerk.models import Address
 
 
 @pytest.fixture
@@ -78,10 +75,10 @@ class TestDraftManager:
             folder="INBOX",
             **{"from": Address(addr="sender@example.com", name="Sender")},
             to=[Address(addr="me@example.com")],
-            date=datetime.now(timezone.utc),
+            date=datetime.now(UTC),
             subject="Original Subject",
             body_text="Original body",
-            headers_fetched_at=datetime.now(timezone.utc),
+            headers_fetched_at=datetime.now(UTC),
         )
         draft_manager.cache.store_message(msg)
 
