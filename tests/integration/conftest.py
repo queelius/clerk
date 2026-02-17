@@ -19,7 +19,7 @@ GREENMAIL_IMAP_PORT = 3143
 GREENMAIL_SMTP_PORT = 3025
 GREENMAIL_USER = "test"
 GREENMAIL_PASSWORD = "password"
-GREENMAIL_EMAIL = "test@localhost"
+GREENMAIL_EMAIL = "test@localhost.test"
 
 
 def wait_for_port(host: str, port: int, timeout: float = 30.0) -> bool:
@@ -79,7 +79,7 @@ def test_config(greenmail_server, tmp_path):
                 **{"from": FromAddress(
                     address=greenmail_server["email"],
                     name="Test User",
-                )},
+                )},  # type: ignore[arg-type]
             ),
         },
         default_account="test",
