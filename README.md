@@ -101,9 +101,12 @@ clerk inbox --json              # JSON output
 
 clerk show <conv-id>            # Show conversation
 clerk show <message-id>         # Show single message
+clerk show abc123               # Prefix matching (if unambiguous)
 
 clerk unread                    # Unread counts by folder
 ```
+
+Conversation IDs are 12-character SHA256 prefixes. Shorter prefixes work if unambiguous — if multiple conversations match, clerk shows them for disambiguation.
 
 ### Search
 
@@ -265,18 +268,34 @@ Add to Claude Code's MCP configuration:
 | Tool | Description |
 |------|-------------|
 | `clerk_inbox` | List conversations |
-| `clerk_show` | Get message details |
-| `clerk_conversation` | Get full thread |
-| `clerk_search` | Search messages |
-| `clerk_search_sql` | Raw SQL search |
+| `clerk_show` | Get conversation/message details (prefix matching) |
+| `clerk_search` | Search messages (FTS + operators) |
+| `clerk_sql` | Readonly SQL queries on message database |
+| `clerk_search_sql` | SQL search returning Message objects |
 | `clerk_draft` | Create draft |
 | `clerk_drafts` | List drafts |
-| `clerk_send` | Send draft |
+| `clerk_send` | Send draft (two-step confirmation) |
 | `clerk_delete_draft` | Delete draft |
-| `clerk_folders` | List folders |
-| `clerk_unread` | Unread counts |
-| `clerk_move` | Move message |
-| `clerk_attachments` | List/download attachments |
+| `clerk_mark_read` | Mark message as read |
+| `clerk_mark_unread` | Mark message as unread |
+| `clerk_archive` | Archive message |
+| `clerk_move` | Move message to folder |
+| `clerk_flag` | Flag/unflag message |
+| `clerk_attachments` | List attachments |
+| `clerk_status` | Connection status |
+
+### Claude Code Skill
+
+Install the clerk skill for Claude Code:
+
+```bash
+clerk skill install            # Install globally (~/.claude/skills/clerk/)
+clerk skill install --local    # Install for current project only
+clerk skill status             # Check installation status
+clerk skill uninstall          # Remove
+```
+
+The skill teaches Claude Code how to use clerk commands effectively.
 
 ## Data Locations
 
@@ -305,9 +324,26 @@ docker-compose -f docker-compose.test.yml up -d
 pytest tests/integration/
 docker-compose -f docker-compose.test.yml down
 
-# Lint
+# Lint and type check
 ruff check src tests
+mypy src
 ```
+
+### Demo Environment
+
+A Docker-based demo with a mock email server (Greenmail):
+
+```bash
+cd demo
+make start        # Start Greenmail mail server
+make setup        # Configure clerk for demo
+make send-test    # Populate with 18 test emails
+make stop         # Tear down
+```
+
+Then use clerk normally: `clerk inbox --fresh`
+
+See `demo/README.md` for details on test accounts and email content.
 
 ## License
 
