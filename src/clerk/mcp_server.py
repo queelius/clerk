@@ -211,6 +211,57 @@ def clerk_search_sql(
 
 
 @mcp.tool()
+def clerk_sql(
+    query: str,
+    limit: int = 100,
+) -> dict[str, Any]:
+    """Execute a readonly SQL SELECT query on the clerk database.
+
+    Opens the database in readonly mode for safety. Returns raw rows as JSON.
+
+    ## Schema: messages table
+    | Column | Type | Description |
+    |--------|------|-------------|
+    | message_id | TEXT PK | RFC Message-ID |
+    | conv_id | TEXT | Conversation thread ID (12-char SHA256) |
+    | account | TEXT | Account name |
+    | folder | TEXT | IMAP folder |
+    | from_addr | TEXT | Sender email |
+    | from_name | TEXT | Sender display name |
+    | to_json | TEXT | Recipients JSON array |
+    | cc_json | TEXT | CC recipients JSON array |
+    | subject | TEXT | Subject line |
+    | date_utc | TEXT | ISO datetime |
+    | body_text | TEXT | Plain text body |
+    | body_html | TEXT | HTML body |
+    | flags | TEXT | JSON array of flags |
+    | attachments_json | TEXT | JSON array of attachments |
+    | in_reply_to | TEXT | Parent message ID |
+    | references_json | TEXT | Thread reference IDs |
+
+    ## FTS table: messages_fts
+    Full-text search on subject, body_text, from_addr, from_name.
+
+    Args:
+        query: SQL SELECT query
+        limit: Maximum results (default: 100)
+
+    Returns:
+        Dictionary with rows (list of dicts) and count
+    """
+    ensure_dirs()
+    api = get_api()
+
+    try:
+        rows = api.cache.execute_readonly_sql(query, limit=limit)
+        return {"rows": rows, "count": len(rows)}
+    except ValueError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"SQL error: {e}"}
+
+
+@mcp.tool()
 def clerk_draft(
     to: str,
     subject: str,

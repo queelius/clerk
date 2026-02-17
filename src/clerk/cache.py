@@ -555,6 +555,50 @@ class Cache:
 
             return [self._row_to_message(row) for row in rows]
 
+    def execute_readonly_sql(
+        self,
+        sql: str,
+        params: tuple[Any, ...] | list[Any] | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Execute a readonly SQL query and return raw rows as dicts.
+
+        Opens a separate readonly connection for safety.
+
+        Args:
+            sql: SQL SELECT query
+            params: Query parameters (optional)
+            limit: Maximum results (enforced even if not in query)
+
+        Returns:
+            List of dicts (column_name -> value)
+
+        Raises:
+            ValueError: If query is not a SELECT or contains dangerous keywords
+        """
+        sql_upper = sql.strip().upper()
+        if not sql_upper.startswith("SELECT"):
+            raise ValueError("Only SELECT queries are allowed")
+
+        dangerous = ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "TRUNCATE"]
+        for keyword in dangerous:
+            if keyword in sql_upper:
+                raise ValueError(f"Query contains disallowed keyword: {keyword}")
+
+        # Open in readonly mode
+        db_uri = f"file:{self.db_path}?mode=ro"
+        conn = sqlite3.connect(db_uri, uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            if "LIMIT" not in sql_upper:
+                sql = f"{sql.rstrip(';')} LIMIT {limit}"
+
+            rows = conn.execute(sql, params).fetchall() if params else conn.execute(sql).fetchall()
+
+            return [dict(row) for row in rows]
+        finally:
+            conn.close()
+
     def update_flags(self, message_id: str, flags: Sequence[MessageFlag]) -> None:
         """Update message flags."""
         with self._connect() as conn:
