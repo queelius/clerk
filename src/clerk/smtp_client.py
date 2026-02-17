@@ -162,7 +162,7 @@ class SmtpClient:
         )
 
         email = self.config.from_.address
-        oauth2_string = get_oauth2_string(email, credentials.token)
+        oauth2_string = get_oauth2_string(email, credentials.token)  # type: ignore[arg-type]
 
         # Connect to Gmail SMTP with XOAUTH2
         smtp = aiosmtplib.SMTP(hostname="smtp.gmail.com", port=587, start_tls=True)

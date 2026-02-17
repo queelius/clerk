@@ -1,7 +1,7 @@
 """Clerk CLI - A thin CLI for LLM agents to interact with email."""
 
 import json
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 from rich.console import Console
@@ -38,7 +38,7 @@ console = Console()
 err_console = Console(stderr=True)
 
 
-def output_json(data: dict | list) -> None:
+def output_json(data: dict[str, Any] | list[Any]) -> None:
     """Output data as JSON."""
     print(json.dumps(data, default=str, indent=2))
 
@@ -220,25 +220,25 @@ def show(
         raise typer.Exit(ExitCode.INVALID_INPUT.value)
 
     # Try as message ID
-    msg = cache.get_message(conv_or_msg_id)
-    if msg:
-        if msg.body_text is None and (fresh or not cache.is_fresh(msg.message_id, config.cache.body_freshness_min, check_body=True)):
-            with get_imap_client(msg.account) as client:
-                    body_text, body_html = client.fetch_message_body(msg.folder, msg.message_id)
-                    cache.update_body(msg.message_id, body_text, body_html)
-                    msg.body_text = body_text
-                    msg.body_html = body_html
+    single_msg = cache.get_message(conv_or_msg_id)
+    if single_msg:
+        if single_msg.body_text is None and (fresh or not cache.is_fresh(single_msg.message_id, config.cache.body_freshness_min, check_body=True)):
+            with get_imap_client(single_msg.account) as client:
+                    body_text, body_html = client.fetch_message_body(single_msg.folder, single_msg.message_id)
+                    cache.update_body(single_msg.message_id, body_text, body_html)
+                    single_msg.body_text = body_text
+                    single_msg.body_html = body_html
 
         if as_json:
-            output_json(msg.model_dump())
+            output_json(single_msg.model_dump())
             return
 
-        console.print(f"[bold]From:[/bold] {msg.from_}")
-        console.print(f"[bold]To:[/bold] {', '.join(str(a) for a in msg.to)}")
-        console.print(f"[bold]Date:[/bold] {msg.date}")
-        console.print(f"[bold]Subject:[/bold] {msg.subject}")
+        console.print(f"[bold]From:[/bold] {single_msg.from_}")
+        console.print(f"[bold]To:[/bold] {', '.join(str(a) for a in single_msg.to)}")
+        console.print(f"[bold]Date:[/bold] {single_msg.date}")
+        console.print(f"[bold]Subject:[/bold] {single_msg.subject}")
         console.print()
-        console.print(msg.body_text or "[dim](no body)[/dim]")
+        console.print(single_msg.body_text or "[dim](no body)[/dim]")
         return
 
     exit_with_code(ExitCode.NOT_FOUND, f"Not found: {conv_or_msg_id}")
@@ -415,6 +415,7 @@ def draft_show(
     draft = manager.get(draft_id)
     if not draft:
         exit_with_code(ExitCode.NOT_FOUND, f"Draft not found: {draft_id}")
+        return
 
     if as_json:
         output_json(draft.model_dump())
@@ -451,6 +452,7 @@ def send(
     draft = manager.get(draft_id)
     if not draft:
         exit_with_code(ExitCode.NOT_FOUND, f"Draft not found: {draft_id}")
+        return
 
     # Check if sending is allowed
     allowed, error = check_send_allowed(draft, draft.account)
@@ -717,7 +719,7 @@ def status(
     ensure_dirs()
     config = get_config()
 
-    status_info = {
+    status_info: dict[str, Any] = {
         "version": __version__,
         "accounts": {},
     }
@@ -915,7 +917,7 @@ def _setup_imap_account(name: str, email: str) -> AccountConfig:
             port=int(smtp_port),
             username=smtp_username,
         ),
-        **{"from": FromAddress(address=email, name=display_name)},
+        **{"from": FromAddress(address=email, name=display_name)},  # type: ignore[arg-type]
     )
 
 
@@ -946,7 +948,7 @@ def _setup_gmail_account(name: str, email: str) -> AccountConfig:
     account_config = AccountConfig(
         protocol="gmail",
         oauth=OAuthConfig(client_id_file=client_id_file),
-        **{"from": FromAddress(address=email, name=display_name)},
+        **{"from": FromAddress(address=email, name=display_name)},  # type: ignore[arg-type]
     )
 
     # Try to authenticate now if the file exists
@@ -1281,6 +1283,7 @@ def search_sql(
         messages = api.search_sql(query, limit=limit)
     except ValueError as e:
         exit_with_code(ExitCode.INVALID_INPUT, str(e))
+        return
 
     if as_json:
         output_json([m.model_dump() for m in messages])

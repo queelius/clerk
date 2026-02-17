@@ -54,7 +54,7 @@ COMMANDS = {
 class ClerkCompleter(Completer):
     """Tab completion for shell commands."""
 
-    def get_completions(self, document, complete_event):
+    def get_completions(self, document: Any, complete_event: Any) -> Any:
         text = document.text_before_cursor
         words = text.split()
 
@@ -179,7 +179,7 @@ def format_drafts(drafts: list[Any]) -> str:
 class ClerkShell:
     """Interactive shell for clerk."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         ensure_dirs()
         self.api = get_api()
 
@@ -188,7 +188,7 @@ class ClerkShell:
         history_dir.mkdir(parents=True, exist_ok=True)
         history_file = history_dir / "shell_history"
 
-        self.session = PromptSession(
+        self.session: PromptSession[str] = PromptSession(
             history=FileHistory(str(history_file)),
             completer=ClerkCompleter(),
             style=STYLE,

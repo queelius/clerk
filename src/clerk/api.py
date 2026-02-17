@@ -22,10 +22,11 @@ from .models import (
     FolderInfo,
     Message,
     MessageFlag,
+    SendResult,
     UnreadCounts,
 )
 from .search import SearchQuery
-from .smtp_client import SendResult, check_send_allowed, send_draft
+from .smtp_client import check_send_allowed, send_draft
 
 
 @dataclass
@@ -348,7 +349,7 @@ class ClerkAPI:
     def search_sql(
         self,
         sql: str,
-        params: tuple | list | None = None,
+        params: tuple[Any, ...] | list[Any] | None = None,
         limit: int = 100,
     ) -> list[Message]:
         """Execute a raw SQL query (power users).
@@ -688,7 +689,7 @@ class ClerkAPI:
         """Get overall status information."""
         from . import __version__
 
-        status = {
+        status: dict[str, Any] = {
             "version": __version__,
             "accounts": {},
         }

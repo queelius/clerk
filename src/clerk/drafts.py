@@ -18,7 +18,7 @@ def generate_draft_id() -> str:
 class DraftManager:
     """Manages draft messages."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.cache = get_cache()
         self._ensure_schema()
 

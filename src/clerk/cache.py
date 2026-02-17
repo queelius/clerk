@@ -2,7 +2,7 @@
 
 import json
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -352,7 +352,7 @@ class Cache:
         with self._connect() as conn:
             # Build query
             where_clauses = ["folder = ?"]
-            params: list = [folder]
+            params: list[Any] = [folder]
 
             if account:
                 where_clauses.append("account = ?")
@@ -516,7 +516,7 @@ class Cache:
     def execute_raw_query(
         self,
         sql: str,
-        params: tuple | list | None = None,
+        params: tuple[Any, ...] | list[Any] | None = None,
         limit: int = 100,
     ) -> list[Message]:
         """Execute a raw SQL SELECT query on the messages table.
@@ -555,7 +555,7 @@ class Cache:
 
             return [self._row_to_message(row) for row in rows]
 
-    def update_flags(self, message_id: str, flags: list[MessageFlag]) -> None:
+    def update_flags(self, message_id: str, flags: Sequence[MessageFlag]) -> None:
         """Update message flags."""
         with self._connect() as conn:
             conn.execute(

@@ -6,11 +6,12 @@ import email.header
 import email.utils
 import hashlib
 import re
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from email.message import Message as EmailMessage
 from typing import Any
 
-from imapclient import IMAPClient
+from imapclient import IMAPClient  # type: ignore[import-untyped]
 
 from .config import AccountConfig, get_config
 from .models import Address, Attachment, FolderInfo, Message, MessageFlag, UnreadCounts
@@ -38,7 +39,7 @@ def decode_header_value(value: str | bytes | None) -> str:
     return " ".join(decoded_parts)
 
 
-def parse_address(addr_tuple: tuple | None) -> Address | None:
+def parse_address(addr_tuple: tuple[str, str] | None) -> Address | None:
     """Parse an address tuple from email.utils.parseaddr."""
     if not addr_tuple or not addr_tuple[1]:
         return None
@@ -76,7 +77,7 @@ def extract_body(msg: EmailMessage) -> tuple[str | None, str | None]:
 
             if content_type == "text/plain" and text_body is None:
                 payload = part.get_payload(decode=True)
-                if payload:
+                if payload and isinstance(payload, bytes):
                     charset = part.get_content_charset() or "utf-8"
                     try:
                         text_body = payload.decode(charset, errors="replace")
@@ -85,7 +86,7 @@ def extract_body(msg: EmailMessage) -> tuple[str | None, str | None]:
 
             elif content_type == "text/html" and html_body is None:
                 payload = part.get_payload(decode=True)
-                if payload:
+                if payload and isinstance(payload, bytes):
                     charset = part.get_content_charset() or "utf-8"
                     try:
                         html_body = payload.decode(charset, errors="replace")
@@ -94,7 +95,7 @@ def extract_body(msg: EmailMessage) -> tuple[str | None, str | None]:
     else:
         content_type = msg.get_content_type()
         payload = msg.get_payload(decode=True)
-        if payload:
+        if payload and isinstance(payload, bytes):
             charset = msg.get_content_charset() or "utf-8"
             try:
                 decoded = payload.decode(charset, errors="replace")
@@ -134,7 +135,7 @@ def extract_attachments(msg: EmailMessage) -> list[Attachment]:
     return attachments
 
 
-def imap_flags_to_model(flags: tuple) -> list[MessageFlag]:
+def imap_flags_to_model(flags: tuple[Any, ...]) -> list[MessageFlag]:
     """Convert IMAP flags to model flags."""
     result = []
     flag_map = {
@@ -155,7 +156,7 @@ def imap_flags_to_model(flags: tuple) -> list[MessageFlag]:
     return result
 
 
-def model_flags_to_imap(flags: list[MessageFlag]) -> list[str]:
+def model_flags_to_imap(flags: Sequence[MessageFlag]) -> list[str]:
     """Convert model flags to IMAP flags."""
     flag_map = {
         MessageFlag.SEEN: "\\Seen",
@@ -357,7 +358,7 @@ class ImapClient:
     def _parse_message(
         self,
         uid: int,
-        data: dict,
+        data: dict[bytes, Any],
         folder: str,
         has_body: bool,
         fetch_time: datetime,
@@ -539,12 +540,12 @@ class ImapClient:
                 decoded_filename = decode_header_value(part_filename)
                 if decoded_filename == filename:
                     payload = part.get_payload(decode=True)
-                    if payload:
+                    if payload and isinstance(payload, bytes):
                         return payload
 
         raise FileNotFoundError(f"Attachment not found: {filename}")
 
-    def set_flags(self, folder: str, message_id: str, flags: list[MessageFlag]) -> None:
+    def set_flags(self, folder: str, message_id: str, flags: Sequence[MessageFlag]) -> None:
         """Set flags on a message."""
         self.client.select_folder(folder)
 
@@ -556,7 +557,7 @@ class ImapClient:
         imap_flags = model_flags_to_imap(flags)
         self.client.set_flags([uid], imap_flags)
 
-    def add_flags(self, folder: str, message_id: str, flags: list[MessageFlag]) -> None:
+    def add_flags(self, folder: str, message_id: str, flags: Sequence[MessageFlag]) -> None:
         """Add flags to a message."""
         self.client.select_folder(folder)
 
@@ -568,7 +569,7 @@ class ImapClient:
         imap_flags = model_flags_to_imap(flags)
         self.client.add_flags([uid], imap_flags)
 
-    def remove_flags(self, folder: str, message_id: str, flags: list[MessageFlag]) -> None:
+    def remove_flags(self, folder: str, message_id: str, flags: Sequence[MessageFlag]) -> None:
         """Remove flags from a message."""
         self.client.select_folder(folder)
 

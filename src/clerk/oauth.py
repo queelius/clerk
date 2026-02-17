@@ -6,7 +6,7 @@ from pathlib import Path
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
+from google_auth_oauthlib.flow import InstalledAppFlow  # type: ignore[import-untyped]
 
 from .config import delete_oauth_token, get_oauth_token, save_oauth_token
 
@@ -47,7 +47,7 @@ def run_oauth_flow(client_id_file: Path, account_name: str) -> Credentials:
     # Save credentials to keyring
     _save_credentials(account_name, credentials)
 
-    return credentials
+    return credentials  # type: ignore[no-any-return]
 
 
 def get_gmail_credentials(account_name: str, client_id_file: Path | None = None) -> Credentials:
@@ -75,7 +75,7 @@ def get_gmail_credentials(account_name: str, client_id_file: Path | None = None)
 
         if credentials.expired and credentials.refresh_token:
             try:
-                credentials.refresh(Request())
+                credentials.refresh(Request())  # type: ignore[no-untyped-call]
                 _save_credentials(account_name, credentials)
                 return credentials
             except Exception:
@@ -134,7 +134,7 @@ def _save_credentials(account_name: str, credentials: Credentials) -> None:
 def _load_credentials(token_json: str) -> Credentials:
     """Load credentials from JSON string."""
     token_data = json.loads(token_json)
-    return Credentials(
+    return Credentials(  # type: ignore[no-untyped-call]
         token=token_data.get("token"),
         refresh_token=token_data.get("refresh_token"),
         token_uri=token_data.get("token_uri", "https://oauth2.googleapis.com/token"),
