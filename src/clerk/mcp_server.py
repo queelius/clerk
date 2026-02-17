@@ -423,6 +423,87 @@ def clerk_archive(message_id: str, account: str | None = None) -> dict[str, Any]
 
 
 @mcp.tool()
+def clerk_move(
+    message_id: str,
+    to_folder: str,
+    from_folder: str = "INBOX",
+    account: str | None = None,
+) -> dict[str, Any]:
+    """Move a message to another folder.
+
+    Args:
+        message_id: ID of the message to move
+        to_folder: Destination folder name (e.g., "Archive", "Trash")
+        from_folder: Source folder (default: "INBOX")
+        account: Account name (uses default if not specified)
+
+    Returns:
+        Dictionary with success status
+    """
+    ensure_dirs()
+    api = get_api()
+
+    try:
+        api.move_message(message_id, to_folder, from_folder=from_folder, account=account)
+        return {"status": "success", "message_id": message_id, "folder": to_folder}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def clerk_flag(
+    message_id: str,
+    unflag: bool = False,
+    account: str | None = None,
+) -> dict[str, Any]:
+    """Flag or unflag a message.
+
+    Args:
+        message_id: ID of the message
+        unflag: If true, remove the flag instead of adding it
+        account: Account name (uses default if not specified)
+
+    Returns:
+        Dictionary with success status
+    """
+    ensure_dirs()
+    api = get_api()
+
+    try:
+        if unflag:
+            api.unflag_message(message_id, account=account)
+        else:
+            api.flag_message(message_id, account=account)
+        return {"status": "success", "message_id": message_id, "flagged": not unflag}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def clerk_mark_unread(
+    message_id: str,
+    account: str | None = None,
+) -> dict[str, Any]:
+    """Mark a message as unread.
+
+    Args:
+        message_id: ID of the message to mark as unread
+        account: Account name (uses default if not specified)
+
+    Returns:
+        Dictionary with success status
+    """
+    ensure_dirs()
+    api = get_api()
+
+    try:
+        api.mark_unread(message_id, account=account)
+        return {"status": "success", "message_id": message_id}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
 def clerk_attachments(message_id: str) -> dict[str, Any]:
     """List attachments for a message.
 
