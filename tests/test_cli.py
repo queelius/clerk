@@ -592,6 +592,198 @@ class TestAccountsCommands:
         mock_save.assert_not_called()
 
 
+class TestMicrosoft365Accounts:
+    """Tests for Microsoft 365 account CLI commands."""
+
+    @patch("clerk.cli.save_config")
+    @patch("clerk.cli.load_config")
+    def test_accounts_add_microsoft365(self, mock_load, mock_save_config):
+        """Test adding a Microsoft 365 account (declining auth)."""
+        from clerk.config import ClerkConfig
+
+        mock_load.return_value = ClerkConfig()
+
+        result = runner.invoke(
+            app,
+            ["accounts", "add", "ms365-test", "--protocol", "microsoft365", "--email", "user@outlook.com"],
+            input="Test User\nn\n",  # display name, decline auth
+        )
+
+        assert result.exit_code == 0
+        assert "added successfully" in result.stdout
+        mock_save_config.assert_called_once()
+
+        # Verify the saved config has the right protocol
+        saved_config = mock_save_config.call_args[0][0]
+        assert "ms365-test" in saved_config.accounts
+        assert saved_config.accounts["ms365-test"].protocol == "microsoft365"
+
+    @patch("clerk.cli.save_config")
+    @patch("clerk.cli.load_config")
+    def test_accounts_add_microsoft365_with_auth(self, mock_load, mock_save_config):
+        """Test adding a Microsoft 365 account with successful authentication."""
+        from clerk.config import ClerkConfig
+
+        mock_load.return_value = ClerkConfig()
+
+        with patch("clerk.microsoft365.run_m365_device_code_flow") as mock_flow:
+            mock_flow.return_value = None
+
+            result = runner.invoke(
+                app,
+                ["accounts", "add", "ms365-test", "--protocol", "microsoft365", "--email", "user@outlook.com"],
+                input="Test User\ny\n",  # display name, accept auth
+            )
+
+        assert result.exit_code == 0
+        assert "added successfully" in result.stdout
+
+    def test_accounts_add_unknown_protocol(self):
+        """Test adding account with unknown protocol."""
+        result = runner.invoke(
+            app,
+            ["accounts", "add", "test", "--protocol", "unknown", "--email", "user@example.com"],
+        )
+
+        assert result.exit_code != 0
+        assert "Unknown protocol" in result.output
+        assert "microsoft365" in result.output  # should mention m365 as an option
+
+    @patch("clerk.cli.save_config")
+    @patch("clerk.cli.load_config")
+    def test_accounts_remove_microsoft365(self, mock_load, mock_save):
+        """Test removing a Microsoft 365 account deletes M365 token cache."""
+        from clerk.config import AccountConfig, ClerkConfig, FromAddress
+
+        mock_load.return_value = ClerkConfig(
+            default_account="ms365-test",
+            accounts={
+                "ms365-test": AccountConfig(
+                    protocol="microsoft365",
+                    **{"from": FromAddress(address="user@outlook.com")},
+                ),
+            },
+        )
+
+        with patch("clerk.config.delete_m365_token_cache") as mock_delete_cache:
+            result = runner.invoke(app, ["accounts", "remove", "ms365-test", "--yes"])
+
+            assert result.exit_code == 0
+            assert "removed" in result.stdout
+            mock_delete_cache.assert_called_once_with("ms365-test")
+            mock_save.assert_called_once()
+
+    @patch("clerk.cli.get_config")
+    def test_accounts_auth_microsoft365(self, mock_config):
+        """Test re-authenticating a Microsoft 365 account."""
+        from clerk.config import AccountConfig, ClerkConfig, FromAddress
+
+        mock_config.return_value = ClerkConfig(
+            accounts={
+                "ms365-test": AccountConfig(
+                    protocol="microsoft365",
+                    **{"from": FromAddress(address="user@outlook.com")},
+                ),
+            },
+        )
+
+        with patch("clerk.microsoft365.run_m365_device_code_flow") as mock_flow:
+            mock_flow.return_value = None
+            result = runner.invoke(app, ["accounts", "auth", "ms365-test"])
+
+            assert result.exit_code == 0
+            assert "Authentication successful" in result.stdout
+            mock_flow.assert_called_once_with("ms365-test")
+
+    @patch("clerk.cli.get_config")
+    def test_accounts_auth_not_found(self, mock_config):
+        """Test auth command for non-existent account."""
+        from clerk.config import ClerkConfig
+
+        mock_config.return_value = ClerkConfig()
+
+        result = runner.invoke(app, ["accounts", "auth", "nonexistent"])
+        assert result.exit_code != 0
+        assert "not found" in result.output
+
+    @patch("clerk.cli.get_config")
+    def test_accounts_auth_imap_rejected(self, mock_config):
+        """Test auth command for IMAP account (should be rejected)."""
+        from clerk.config import (
+            AccountConfig,
+            ClerkConfig,
+            FromAddress,
+            ImapConfig,
+            SmtpConfig,
+        )
+
+        mock_config.return_value = ClerkConfig(
+            accounts={
+                "imap-test": AccountConfig(
+                    protocol="imap",
+                    imap=ImapConfig(host="imap.ex.com", username="user"),
+                    smtp=SmtpConfig(host="smtp.ex.com", username="user"),
+                    **{"from": FromAddress(address="user@ex.com")},
+                ),
+            },
+        )
+
+        result = runner.invoke(app, ["accounts", "auth", "imap-test"])
+        assert result.exit_code != 0
+        assert "password authentication" in result.output
+
+    @patch("clerk.cli.get_config")
+    def test_accounts_auth_gmail(self, mock_config):
+        """Test auth command for Gmail account."""
+        from pathlib import Path
+
+        from clerk.config import (
+            AccountConfig,
+            ClerkConfig,
+            FromAddress,
+            OAuthConfig,
+        )
+
+        mock_config.return_value = ClerkConfig(
+            accounts={
+                "gmail-test": AccountConfig(
+                    protocol="gmail",
+                    oauth=OAuthConfig(client_id_file=Path("/tmp/credentials.json")),
+                    **{"from": FromAddress(address="user@gmail.com")},
+                ),
+            },
+        )
+
+        with patch("clerk.oauth.run_oauth_flow") as mock_flow:
+            mock_flow.return_value = None
+            result = runner.invoke(app, ["accounts", "auth", "gmail-test"])
+
+            assert result.exit_code == 0
+            assert "Authentication successful" in result.stdout
+            mock_flow.assert_called_once()
+
+    @patch("clerk.cli.get_config")
+    def test_accounts_auth_microsoft365_failure(self, mock_config):
+        """Test auth command when Microsoft 365 auth fails."""
+        from clerk.config import AccountConfig, ClerkConfig, FromAddress
+
+        mock_config.return_value = ClerkConfig(
+            accounts={
+                "ms365-test": AccountConfig(
+                    protocol="microsoft365",
+                    **{"from": FromAddress(address="user@outlook.com")},
+                ),
+            },
+        )
+
+        with patch("clerk.microsoft365.run_m365_device_code_flow") as mock_flow:
+            mock_flow.side_effect = Exception("Token expired")
+            result = runner.invoke(app, ["accounts", "auth", "ms365-test"])
+
+            assert result.exit_code != 0
+            assert "Authentication failed" in result.output
+
+
 class TestHostGuessing:
     def test_guess_imap_host_gmail(self):
         from clerk.cli import _guess_imap_host
