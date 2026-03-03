@@ -200,6 +200,8 @@ class ImapClient:
 
         if self.config.protocol == "gmail":
             self._connect_gmail()
+        elif self.config.protocol == "microsoft365":
+            self._connect_microsoft365()
         else:
             self._connect_imap()
 
@@ -234,6 +236,17 @@ class ImapClient:
         # Authenticate with XOAUTH2
         email = self.config.from_.address
         self._client.oauth2_login(email, credentials.token)
+
+    def _connect_microsoft365(self) -> None:
+        """Connect to Microsoft 365 using OAuth2 XOAUTH2 authentication."""
+        from .microsoft365 import get_m365_access_token
+
+        access_token = get_m365_access_token(self.account_name)
+
+        self._client = IMAPClient("outlook.office365.com", port=993, ssl=True)
+
+        email = self.config.from_.address
+        self._client.oauth2_login(email, access_token)
 
     def disconnect(self) -> None:
         """Disconnect from the IMAP server."""
