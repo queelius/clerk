@@ -118,6 +118,8 @@ class SmtpClient:
         try:
             if self.config.protocol == "gmail":
                 await self._send_gmail(msg)
+            elif self.config.protocol == "microsoft365":
+                await self._send_microsoft365(msg)
             else:
                 await self._send_imap(msg)
 
@@ -173,6 +175,30 @@ class SmtpClient:
         await smtp.auth_plain(email, oauth2_string)
 
         # Send the message
+        await smtp.send_message(msg)
+        await smtp.quit()
+
+    async def _send_microsoft365(self, msg: MIMEMultipart) -> None:
+        """Send via Microsoft 365 SMTP with XOAUTH2 authentication."""
+        from .microsoft365 import get_m365_access_token
+        from .oauth import get_oauth2_string
+
+        access_token = get_m365_access_token(self.account_name)
+        email_addr = self.config.from_.address
+        oauth2_string = get_oauth2_string(email_addr, access_token)
+
+        smtp = aiosmtplib.SMTP(hostname="smtp.office365.com", port=587, start_tls=True)
+        await smtp.connect()
+        await smtp.ehlo()
+        await smtp.starttls()
+
+        # XOAUTH2 auth via raw SMTP command
+        response = await smtp.execute_command(
+            b"AUTH", b"XOAUTH2", oauth2_string.encode()
+        )
+        if response.code != 235:
+            raise aiosmtplib.SMTPAuthenticationError(response.code, response.message)
+
         await smtp.send_message(msg)
         await smtp.quit()
 
