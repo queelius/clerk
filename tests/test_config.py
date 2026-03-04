@@ -10,7 +10,6 @@ from clerk.config import (
     ClerkConfig,
     FromAddress,
     ImapConfig,
-    PrioritiesConfig,
     SendConfig,
     SmtpConfig,
     delete_m365_token_cache,

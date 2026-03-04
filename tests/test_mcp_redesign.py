@@ -1,6 +1,7 @@
 """Tests for the redesigned MCP server (8 tools + 3 resources)."""
 
 import json
+import time
 from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
@@ -70,6 +71,94 @@ def mock_config():
             topics=["IDOT", "scanner"],
         ),
     )
+
+
+# --- Confirmation tokens ---
+
+class TestConfirmationTokens:
+    """Tests for the two-step send confirmation flow internals."""
+
+    def test_generate_and_validate_token(self):
+        from clerk.mcp_server import (
+            _confirmation_tokens,
+            _generate_confirmation_token,
+            _validate_confirmation_token,
+        )
+
+        _confirmation_tokens.clear()
+
+        draft_id = "draft_test123"
+        token = _generate_confirmation_token(draft_id)
+
+        assert token is not None
+        assert len(token) == 32  # 16 bytes hex = 32 chars
+        assert draft_id in _confirmation_tokens
+
+        # Validate the token
+        valid, error = _validate_confirmation_token(draft_id, token)
+        assert valid is True
+        assert error is None
+
+        # Token should be consumed (one-time use)
+        assert draft_id not in _confirmation_tokens
+
+    def test_invalid_token(self):
+        from clerk.mcp_server import (
+            _confirmation_tokens,
+            _generate_confirmation_token,
+            _validate_confirmation_token,
+        )
+
+        _confirmation_tokens.clear()
+
+        draft_id = "draft_test456"
+        _generate_confirmation_token(draft_id)
+
+        valid, error = _validate_confirmation_token(draft_id, "wrong_token")
+        assert valid is False
+        assert "Invalid confirmation token" in error
+
+    def test_no_token_exists(self):
+        from clerk.mcp_server import _confirmation_tokens, _validate_confirmation_token
+
+        _confirmation_tokens.clear()
+
+        valid, error = _validate_confirmation_token("nonexistent", "any_token")
+        assert valid is False
+        assert "No confirmation token found" in error
+
+    def test_expired_token(self):
+        from clerk.mcp_server import (
+            _confirmation_tokens,
+            _validate_confirmation_token,
+        )
+
+        _confirmation_tokens.clear()
+
+        draft_id = "draft_expired"
+        token = "test_token"
+        # Set expiry in the past
+        _confirmation_tokens[draft_id] = (token, time.time() - 1)
+
+        valid, error = _validate_confirmation_token(draft_id, token)
+        assert valid is False
+        assert "expired" in error.lower()
+
+    def test_cleanup_expired_tokens(self):
+        from clerk.mcp_server import _cleanup_expired_tokens, _confirmation_tokens
+
+        _confirmation_tokens.clear()
+
+        # Add some tokens - one expired, one valid
+        _confirmation_tokens["expired1"] = ("token1", time.time() - 100)
+        _confirmation_tokens["expired2"] = ("token2", time.time() - 10)
+        _confirmation_tokens["valid1"] = ("token3", time.time() + 300)
+
+        _cleanup_expired_tokens()
+
+        assert "expired1" not in _confirmation_tokens
+        assert "expired2" not in _confirmation_tokens
+        assert "valid1" in _confirmation_tokens
 
 
 # --- clerk_sql ---
