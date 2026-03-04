@@ -565,3 +565,34 @@ class TestPrefixMatching:
         assert summary.account == "test_account"
         assert "alice@example.com" in summary.participants
         assert "bob@example.com" in summary.participants
+
+
+class TestSyncState:
+    def test_get_sync_state_returns_none_for_unknown(self, tmp_path):
+        cache = Cache(tmp_path / "test.db")
+        state = cache.get_sync_state("test", "INBOX")
+        assert state is None
+
+    def test_set_and_get_sync_state(self, tmp_path):
+        cache = Cache(tmp_path / "test.db")
+        cache.set_sync_state("test", "INBOX", last_uid=42)
+        state = cache.get_sync_state("test", "INBOX")
+        assert state is not None
+        assert state["last_uid"] == 42
+        assert state["account"] == "test"
+        assert state["folder"] == "INBOX"
+        assert "last_sync_utc" in state
+
+    def test_update_sync_state(self, tmp_path):
+        cache = Cache(tmp_path / "test.db")
+        cache.set_sync_state("test", "INBOX", last_uid=10)
+        cache.set_sync_state("test", "INBOX", last_uid=42)
+        state = cache.get_sync_state("test", "INBOX")
+        assert state["last_uid"] == 42
+
+    def test_sync_state_per_folder(self, tmp_path):
+        cache = Cache(tmp_path / "test.db")
+        cache.set_sync_state("test", "INBOX", last_uid=10)
+        cache.set_sync_state("test", "Sent", last_uid=20)
+        assert cache.get_sync_state("test", "INBOX")["last_uid"] == 10
+        assert cache.get_sync_state("test", "Sent")["last_uid"] == 20

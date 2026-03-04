@@ -112,6 +112,15 @@ CREATE TABLE IF NOT EXISTS cache_meta (
     value TEXT NOT NULL
 );
 
+-- Sync state for incremental IMAP fetching
+CREATE TABLE IF NOT EXISTS sync_state (
+    account TEXT NOT NULL,
+    folder TEXT NOT NULL,
+    last_uid INTEGER DEFAULT 0,
+    last_sync_utc TEXT NOT NULL,
+    PRIMARY KEY (account, folder)
+);
+
 -- Send audit log (append-only, not pruned with cache)
 CREATE TABLE IF NOT EXISTS send_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -725,6 +734,28 @@ class Cache:
                 newest_message=datetime.fromisoformat(newest) if newest else None,
                 cache_size_bytes=cache_size,
                 last_sync=datetime.fromisoformat(last_sync) if last_sync else None,
+            )
+
+    def get_sync_state(self, account: str, folder: str) -> dict[str, Any] | None:
+        """Get the sync state for an account/folder pair."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM sync_state WHERE account = ? AND folder = ?",
+                (account, folder),
+            ).fetchone()
+            if row:
+                return dict(row)
+        return None
+
+    def set_sync_state(self, account: str, folder: str, last_uid: int) -> None:
+        """Update the sync state for an account/folder pair."""
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO sync_state (account, folder, last_uid, last_sync_utc)
+                VALUES (?, ?, ?, ?)
+                """,
+                (account, folder, last_uid, datetime.now(UTC).isoformat()),
             )
 
     def log_send(
