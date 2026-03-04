@@ -10,8 +10,8 @@ M365_CLIENT_ID = "9e5f94bc-e8a4-4e73-b8be-63364c29d753"  # Thunderbird's client 
 M365_AUTHORITY = "https://login.microsoftonline.com/common"
 
 M365_SCOPES = [
-    "https://outlook.office365.com/IMAP.AccessAsUser.All",
-    "https://outlook.office365.com/SMTP.Send",
+    "https://outlook.office.com/IMAP.AccessAsUser.All",
+    "https://outlook.office.com/SMTP.Send",
 ]
 
 

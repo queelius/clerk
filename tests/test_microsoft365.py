@@ -8,11 +8,11 @@ import pytest
 class TestM365Constants:
     def test_scopes_include_imap(self):
         from clerk.microsoft365 import M365_SCOPES
-        assert "https://outlook.office365.com/IMAP.AccessAsUser.All" in M365_SCOPES
+        assert "https://outlook.office.com/IMAP.AccessAsUser.All" in M365_SCOPES
 
     def test_scopes_include_smtp(self):
         from clerk.microsoft365 import M365_SCOPES
-        assert "https://outlook.office365.com/SMTP.Send" in M365_SCOPES
+        assert "https://outlook.office.com/SMTP.Send" in M365_SCOPES
 
     def test_scopes_exclude_reserved(self):
         """MSAL adds offline_access automatically; we must not include reserved scopes."""
