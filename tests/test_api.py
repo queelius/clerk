@@ -1,7 +1,7 @@
 """Tests for ClerkAPI."""
 
 from datetime import UTC, datetime
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -456,3 +456,101 @@ class TestGetApi:
 
         # Reset for other tests
         clerk.api._api_instance = None
+
+
+class TestSyncFolder:
+    """Tests for sync_folder operation."""
+
+    def test_incremental_sync_returns_count(self, api, monkeypatch):
+        """Sync should return number of new messages fetched."""
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.fetch_messages_since_uid.return_value = ([], 0)
+        monkeypatch.setattr("clerk.api.get_imap_client", lambda _: mock_client)
+
+        result = api.sync_folder(account="test", folder="INBOX")
+
+        assert result["synced"] == 0
+        assert result["account"] == "test"
+        assert result["folder"] == "INBOX"
+
+    def test_incremental_sync_updates_sync_state(self, api, cache, monkeypatch):
+        """Sync should update the last_uid in sync_state."""
+        msg = Message(
+            message_id="<msg1@example.com>",
+            conv_id="abc123",
+            account="test",
+            folder="INBOX",
+            **{"from": Address(addr="alice@example.com", name="Alice")},
+            to=[Address(addr="test@example.com", name="Test")],
+            subject="Test",
+            date=datetime.now(UTC),
+            headers_fetched_at=datetime.now(UTC),
+        )
+
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.fetch_messages_since_uid.return_value = ([msg], 100)
+        monkeypatch.setattr("clerk.api.get_imap_client", lambda _: mock_client)
+
+        result = api.sync_folder(account="test", folder="INBOX")
+        assert result["synced"] == 1
+
+        state = cache.get_sync_state("test", "INBOX")
+        assert state is not None
+        assert state["last_uid"] == 100
+
+    def test_incremental_sync_uses_existing_uid(self, api, cache, monkeypatch):
+        """Sync should pass the last known UID to fetch_messages_since_uid."""
+        cache.set_sync_state("test", "INBOX", 50)
+
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.fetch_messages_since_uid.return_value = ([], 50)
+        monkeypatch.setattr("clerk.api.get_imap_client", lambda _: mock_client)
+
+        api.sync_folder(account="test", folder="INBOX")
+
+        mock_client.fetch_messages_since_uid.assert_called_once_with(
+            folder="INBOX",
+            since_uid=50,
+            fetch_bodies=False,
+        )
+
+    def test_full_sync_ignores_sync_state(self, api, cache, monkeypatch):
+        """Full sync should ignore existing sync state and pass since_uid=0."""
+        cache.set_sync_state("test", "INBOX", 50)
+
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.fetch_messages_since_uid.return_value = ([], 0)
+        monkeypatch.setattr("clerk.api.get_imap_client", lambda _: mock_client)
+
+        api.sync_folder(account="test", folder="INBOX", full=True)
+
+        mock_client.fetch_messages_since_uid.assert_called_once_with(
+            folder="INBOX",
+            since_uid=0,
+            fetch_bodies=False,
+        )
+
+    def test_sync_does_not_update_state_if_no_new_messages(self, api, cache, monkeypatch):
+        """Sync should not update sync state when highest_uid hasn't changed."""
+        cache.set_sync_state("test", "INBOX", 50)
+
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        # highest_uid == since_uid means no new messages
+        mock_client.fetch_messages_since_uid.return_value = ([], 50)
+        monkeypatch.setattr("clerk.api.get_imap_client", lambda _: mock_client)
+
+        api.sync_folder(account="test", folder="INBOX")
+
+        state = cache.get_sync_state("test", "INBOX")
+        assert state is not None
+        assert state["last_uid"] == 50

@@ -649,6 +649,61 @@ class ClerkAPI:
         return dest_path
 
     # =========================================================================
+    # Sync Operations
+    # =========================================================================
+
+    def sync_folder(
+        self,
+        account: str | None = None,
+        folder: str = "INBOX",
+        full: bool = False,
+    ) -> dict[str, Any]:
+        """Sync a folder from IMAP, fetching only new messages.
+
+        Uses UID-based incremental sync: only messages with UIDs higher than
+        the last known UID are fetched. On first sync (or full=True), fetches
+        the most recent batch.
+
+        Args:
+            account: Account name (uses default if not provided)
+            folder: Folder to sync (default: INBOX)
+            full: If True, re-fetch everything (ignore sync state)
+
+        Returns:
+            Dict with synced count, account, folder
+        """
+        account_name, _ = self.config.get_account(account)
+
+        # Get the last known UID for this folder
+        since_uid = 0
+        if not full:
+            state = self.cache.get_sync_state(account_name, folder)
+            if state:
+                since_uid = state["last_uid"]
+
+        with get_imap_client(account_name) as client:
+            messages, highest_uid = client.fetch_messages_since_uid(
+                folder=folder,
+                since_uid=since_uid,
+                fetch_bodies=False,
+            )
+
+            for msg in messages:
+                self.cache.store_message(msg)
+
+        # Update sync state only if we saw new UIDs
+        if highest_uid > since_uid:
+            self.cache.set_sync_state(account_name, folder, highest_uid)
+
+        self.cache.mark_inbox_synced(account_name)
+
+        return {
+            "synced": len(messages),
+            "account": account_name,
+            "folder": folder,
+        }
+
+    # =========================================================================
     # Cache & Status Operations
     # =========================================================================
 

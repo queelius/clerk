@@ -474,6 +474,65 @@ class ImapClient:
             body_fetched_at=fetch_time if has_body else None,
         )
 
+    def fetch_messages_since_uid(
+        self,
+        folder: str = "INBOX",
+        since_uid: int = 0,
+        fetch_bodies: bool = False,
+    ) -> tuple[list[Message], int]:
+        """Fetch messages with UID greater than since_uid.
+
+        Args:
+            folder: IMAP folder to fetch from
+            since_uid: Only fetch messages with UID > this value.
+                If 0, fetches the most recent 200 messages (first sync).
+            fetch_bodies: If True, fetch full message bodies; otherwise headers only.
+
+        Returns:
+            Tuple of (messages, highest_uid_seen). highest_uid_seen will be
+            at least since_uid even if no new messages are found.
+        """
+        self.client.select_folder(folder, readonly=True)
+
+        if since_uid > 0:
+            # Fetch UIDs greater than the last known UID
+            message_uids = self.client.search(["UID", f"{since_uid + 1}:*"])
+            # Filter out the since_uid itself (IMAP UID ranges are inclusive)
+            message_uids = [uid for uid in message_uids if uid > since_uid]
+        else:
+            # First sync -- get recent messages
+            message_uids = self.client.search(["ALL"])
+            message_uids = sorted(message_uids, reverse=True)[:200]
+
+        if not message_uids:
+            return [], since_uid
+
+        # Determine what to fetch -- same items as fetch_messages
+        fetch_items = ["FLAGS", "ENVELOPE", "INTERNALDATE", "RFC822.SIZE"]
+        if fetch_bodies:
+            fetch_items.append("BODY.PEEK[]")
+        else:
+            fetch_items.append("BODY.PEEK[HEADER]")
+
+        fetch_data = self.client.fetch(message_uids, fetch_items)
+
+        messages = []
+        highest_uid = since_uid
+        now = datetime.now(UTC)
+
+        for uid in sorted(fetch_data.keys()):
+            if uid > highest_uid:
+                highest_uid = uid
+            try:
+                msg = self._parse_message(uid, fetch_data[uid], folder, fetch_bodies, now)
+                if msg:
+                    messages.append(msg)
+            except Exception as e:
+                import sys
+                print(f"Warning: Failed to parse message {uid}: {e}", file=sys.stderr)
+
+        return messages, highest_uid
+
     def fetch_message_body(self, folder: str, message_id: str) -> tuple[str | None, str | None]:
         """Fetch just the body of a specific message."""
         self.client.select_folder(folder, readonly=True)
