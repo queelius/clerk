@@ -14,9 +14,12 @@ class TestM365Constants:
         from clerk.microsoft365 import M365_SCOPES
         assert "https://outlook.office365.com/SMTP.Send" in M365_SCOPES
 
-    def test_scopes_include_offline_access(self):
+    def test_scopes_exclude_reserved(self):
+        """MSAL adds offline_access automatically; we must not include reserved scopes."""
         from clerk.microsoft365 import M365_SCOPES
-        assert "offline_access" in M365_SCOPES
+        assert "offline_access" not in M365_SCOPES
+        assert "openid" not in M365_SCOPES
+        assert "profile" not in M365_SCOPES
 
     def test_authority_is_common(self):
         from clerk.microsoft365 import M365_AUTHORITY

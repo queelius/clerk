@@ -12,7 +12,6 @@ M365_AUTHORITY = "https://login.microsoftonline.com/common"
 M365_SCOPES = [
     "https://outlook.office365.com/IMAP.AccessAsUser.All",
     "https://outlook.office365.com/SMTP.Send",
-    "offline_access",
 ]
 
 
