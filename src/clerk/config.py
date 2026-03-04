@@ -151,6 +151,13 @@ class SendConfig(BaseModel):
     blocked_recipients: list[EmailStr] = Field(default_factory=list)
 
 
+class PrioritiesConfig(BaseModel):
+    """Priority filtering configuration for LLM agents."""
+
+    senders: list[str] = Field(default_factory=list)
+    topics: list[str] = Field(default_factory=list)
+
+
 class ClerkConfig(BaseModel):
     """Root configuration for clerk."""
 
@@ -158,6 +165,7 @@ class ClerkConfig(BaseModel):
     accounts: dict[str, AccountConfig] = Field(default_factory=dict)
     cache: CacheConfig = Field(default_factory=CacheConfig)
     send: SendConfig = Field(default_factory=SendConfig)
+    priorities: PrioritiesConfig = Field(default_factory=PrioritiesConfig)
 
     @model_validator(mode="after")
     def validate_default_account(self) -> "ClerkConfig":

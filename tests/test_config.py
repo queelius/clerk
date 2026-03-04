@@ -10,6 +10,7 @@ from clerk.config import (
     ClerkConfig,
     FromAddress,
     ImapConfig,
+    PrioritiesConfig,
     SendConfig,
     SmtpConfig,
     delete_m365_token_cache,
@@ -124,6 +125,42 @@ class TestSendConfig:
     def test_blocked_recipients(self):
         send = SendConfig(blocked_recipients=["spam@example.com", "test@example.com"])
         assert len(send.blocked_recipients) == 2
+
+
+class TestPrioritiesConfig:
+    def test_empty_priorities_by_default(self):
+        config = ClerkConfig()
+        assert config.priorities.senders == []
+        assert config.priorities.topics == []
+
+    def test_priorities_from_yaml(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("""
+default_account: test
+accounts:
+  test:
+    protocol: imap
+    imap:
+      host: localhost
+      port: 993
+      username: test
+    smtp:
+      host: localhost
+      port: 587
+      username: test
+    from:
+      address: test@example.com
+priorities:
+  senders:
+    - "alice@example.com"
+    - "@siue.edu"
+  topics:
+    - "IDOT"
+    - "scanner"
+""")
+        config = load_config(config_file)
+        assert config.priorities.senders == ["alice@example.com", "@siue.edu"]
+        assert config.priorities.topics == ["IDOT", "scanner"]
 
 
 class TestClerkConfig:
