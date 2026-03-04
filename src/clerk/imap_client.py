@@ -44,6 +44,9 @@ def parse_address(addr_tuple: tuple[str, str] | None) -> Address | None:
     if not addr_tuple or not addr_tuple[1]:
         return None
     name, addr = addr_tuple
+    if "@" not in addr:
+        # Malformed header (e.g., bare display name with no email) — preserve as name
+        return Address(addr="", name=addr or name)
     return Address(addr=addr, name=decode_header_value(name))
 
 

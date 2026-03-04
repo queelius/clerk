@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 from enum import Enum
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, Field
 
 
 class MessageFlag(str, Enum):
@@ -19,7 +19,7 @@ class MessageFlag(str, Enum):
 class Address(BaseModel):
     """Email address with optional display name."""
 
-    addr: EmailStr
+    addr: str
     name: str = ""
 
     def __str__(self) -> str:
