@@ -849,8 +849,8 @@ def accounts_add(
     if name in config.accounts:
         exit_with_code(ExitCode.INVALID_INPUT, f"Account '{name}' already exists")
 
-    if protocol not in ("imap", "gmail"):
-        exit_with_code(ExitCode.INVALID_INPUT, f"Unknown protocol: {protocol}. Use 'imap' or 'gmail'")
+    if protocol not in ("imap", "gmail", "microsoft365"):
+        exit_with_code(ExitCode.INVALID_INPUT, f"Unknown protocol: {protocol}. Use 'imap', 'gmail', or 'microsoft365'")
 
     # Get email address
     if not email:
@@ -865,6 +865,8 @@ def accounts_add(
 
     if protocol == "gmail":
         account_config = _setup_gmail_account(name, email)
+    elif protocol == "microsoft365":
+        account_config = _setup_microsoft365_account(name, email)
     else:
         account_config = _setup_imap_account(name, email)
 
@@ -966,6 +968,35 @@ def _setup_gmail_account(name: str, email: str) -> AccountConfig:
     return account_config
 
 
+def _setup_microsoft365_account(name: str, email: str) -> AccountConfig:
+    """Set up a Microsoft 365 account with device code flow."""
+    console.print("[bold]Microsoft 365 OAuth Setup[/bold]")
+    console.print(
+        "You'll authenticate using your browser.\n"
+        "No additional setup is needed — just sign in with your Microsoft account.\n"
+    )
+
+    display_name = typer.prompt("Display name (optional)", default="")
+
+    account_config = AccountConfig(
+        protocol="microsoft365",
+        **{"from": FromAddress(address=email, name=display_name)},  # type: ignore[arg-type]
+    )
+
+    if typer.confirm("\nAuthenticate now?", default=True):
+        try:
+            from .microsoft365 import run_m365_device_code_flow
+
+            console.print()
+            run_m365_device_code_flow(name)
+            console.print("\n[green]Authentication successful![/green]")
+        except Exception as e:
+            console.print(f"\n[yellow]Authentication failed: {e}[/yellow]")
+            console.print("You can try again later with 'clerk accounts auth'.")
+
+    return account_config
+
+
 @accounts_app.command(name="test")
 def accounts_test(
     name: Annotated[str, typer.Argument(help="Account name to test")],
@@ -1052,6 +1083,10 @@ def accounts_remove(
     # Delete credentials
     if account_config.protocol == "gmail":
         delete_oauth_token(name)
+    elif account_config.protocol == "microsoft365":
+        from .config import delete_m365_token_cache
+
+        delete_m365_token_cache(name)
     else:
         delete_password(name)
 
@@ -1066,6 +1101,50 @@ def accounts_remove(
     save_config(config)
 
     console.print(f"[green]Account '{name}' removed.[/green]")
+
+
+@accounts_app.command(name="auth")
+def accounts_auth(
+    name: Annotated[str, typer.Argument(help="Account name to authenticate")],
+) -> None:
+    """Re-authenticate an account (run OAuth flow again)."""
+    ensure_dirs()
+    config = get_config()
+
+    if name not in config.accounts:
+        exit_with_code(ExitCode.NOT_FOUND, f"Account '{name}' not found")
+
+    account_config = config.accounts[name]
+
+    if account_config.protocol == "gmail":
+        from .oauth import run_oauth_flow
+
+        if not account_config.oauth:
+            exit_with_code(ExitCode.INVALID_INPUT, f"Gmail account '{name}' missing OAuth configuration")
+
+        console.print("[dim]Opening browser for Google authentication...[/dim]")
+        try:
+            run_oauth_flow(account_config.oauth.client_id_file, name)  # type: ignore[union-attr]
+            console.print("[green]Authentication successful![/green]")
+        except Exception as e:
+            exit_with_code(ExitCode.CONNECTION_ERROR, f"Authentication failed: {e}")
+
+    elif account_config.protocol == "microsoft365":
+        from .microsoft365 import run_m365_device_code_flow
+
+        console.print("[bold]Microsoft 365 Re-authentication[/bold]\n")
+        try:
+            run_m365_device_code_flow(name)
+            console.print("\n[green]Authentication successful![/green]")
+        except Exception as e:
+            exit_with_code(ExitCode.CONNECTION_ERROR, f"Authentication failed: {e}")
+
+    else:
+        exit_with_code(
+            ExitCode.INVALID_INPUT,
+            f"Account '{name}' uses password authentication. "
+            "Use 'clerk accounts set-password' to update the password.",
+        )
 
 
 # ============================================================================

@@ -12,7 +12,10 @@ from clerk.config import (
     ImapConfig,
     SendConfig,
     SmtpConfig,
+    delete_m365_token_cache,
+    get_m365_token_cache,
     load_config,
+    save_m365_token_cache,
 )
 
 
@@ -72,6 +75,23 @@ class TestAccountConfig:
                 protocol="gmail",
                 **{"from": FromAddress(address="user@gmail.com")},
             )
+
+    def test_microsoft365_account(self):
+        acc = AccountConfig(
+            protocol="microsoft365",
+            **{"from": FromAddress(address="user@siue.edu")},
+        )
+        assert acc.protocol == "microsoft365"
+        assert acc.imap is None
+        assert acc.smtp is None
+        assert acc.oauth is None
+
+    def test_microsoft365_no_imap_smtp_required(self):
+        """microsoft365 protocol should NOT require imap/smtp config."""
+        AccountConfig(
+            protocol="microsoft365",
+            **{"from": FromAddress(address="user@org.edu")},
+        )
 
 
 class TestCacheConfig:
@@ -422,3 +442,58 @@ class TestPasswordStorage:
 
         # Should not raise
         delete_password("nonexistent")
+
+
+class TestM365TokenStorage:
+    @pytest.fixture
+    def mock_keyring(self, monkeypatch):
+        """Mock keyring for testing."""
+        storage = {}
+
+        def mock_get_password(service, username):
+            return storage.get(f"{service}:{username}")
+
+        def mock_set_password(service, username, password):
+            storage[f"{service}:{username}"] = password
+
+        def mock_delete_password(service, username):
+            key = f"{service}:{username}"
+            if key not in storage:
+                import keyring.errors
+
+                raise keyring.errors.PasswordDeleteError("Not found")
+            del storage[key]
+
+        import keyring
+
+        monkeypatch.setattr(keyring, "get_password", mock_get_password)
+        monkeypatch.setattr(keyring, "set_password", mock_set_password)
+        monkeypatch.setattr(keyring, "delete_password", mock_delete_password)
+
+        return storage
+
+    def test_save_and_get_m365_token_cache(self, mock_keyring):
+        """Test saving and retrieving M365 token cache."""
+        cache_data = '{"AccessToken": {"key": "value"}, "RefreshToken": {"key": "value"}}'
+        save_m365_token_cache("test-account", cache_data)
+
+        result = get_m365_token_cache("test-account")
+        assert result == cache_data
+
+    def test_get_m365_token_cache_not_found(self, mock_keyring):
+        """Test getting non-existent M365 token cache returns None."""
+        result = get_m365_token_cache("nonexistent")
+        assert result is None
+
+    def test_delete_m365_token_cache(self, mock_keyring):
+        """Test deleting M365 token cache."""
+        save_m365_token_cache("test-account", '{"token": "test"}')
+        assert get_m365_token_cache("test-account") is not None
+
+        delete_m365_token_cache("test-account")
+        assert get_m365_token_cache("test-account") is None
+
+    def test_delete_m365_token_cache_not_found(self, mock_keyring):
+        """Test deleting non-existent M365 token cache doesn't raise."""
+        # Should not raise
+        delete_m365_token_cache("nonexistent")

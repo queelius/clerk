@@ -61,7 +61,7 @@ class OAuthConfig(BaseModel):
 class AccountConfig(BaseModel):
     """Configuration for a single email account."""
 
-    protocol: Literal["imap", "gmail"] = "imap"
+    protocol: Literal["imap", "gmail", "microsoft365"] = "imap"
 
     imap: ImapConfig | None = None
     smtp: SmtpConfig | None = None
@@ -245,6 +245,25 @@ def delete_oauth_token(account_name: str) -> None:
     """Delete OAuth token from keyring."""
     with contextlib.suppress(keyring.errors.PasswordDeleteError):
         keyring.delete_password("clerk-oauth", account_name)
+
+
+def get_m365_token_cache(account_name: str) -> str | None:
+    """Retrieve M365 MSAL token cache from keyring."""
+    try:
+        return keyring.get_password("clerk-m365", account_name)
+    except Exception:
+        return None
+
+
+def save_m365_token_cache(account_name: str, cache_data: str) -> None:
+    """Save M365 MSAL token cache to keyring."""
+    keyring.set_password("clerk-m365", account_name, cache_data)
+
+
+def delete_m365_token_cache(account_name: str) -> None:
+    """Delete M365 MSAL token cache from keyring."""
+    with contextlib.suppress(keyring.errors.PasswordDeleteError):
+        keyring.delete_password("clerk-m365", account_name)
 
 
 def save_config(config: ClerkConfig, config_path: Path | None = None) -> None:
