@@ -1,213 +1,53 @@
-"""MCP Server for clerk - Model Context Protocol integration for LLM agents."""
+"""MCP Server for clerk — 8 tools + 3 resources for LLM email agents."""
 
+import json
 import secrets
 import time
-from typing import Any
+from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
 
 from .api import get_api
-from .config import ensure_dirs
+from .cache import SCHEMA
+from .config import ensure_dirs, get_config
+from .smtp_client import check_send_allowed, format_draft_preview
 
-# Create the MCP server
 mcp = FastMCP(name="clerk")
 
-# Store confirmation tokens with expiry (draft_id -> (token, expiry_timestamp))
+# Confirmation token storage
 _confirmation_tokens: dict[str, tuple[str, float]] = {}
-CONFIRMATION_TOKEN_EXPIRY_SECONDS = 300  # 5 minutes
+CONFIRMATION_TOKEN_EXPIRY_SECONDS = 300
 
 
 def _generate_confirmation_token(draft_id: str) -> str:
-    """Generate a confirmation token for a draft."""
     token = secrets.token_hex(16)
-    expiry = time.time() + CONFIRMATION_TOKEN_EXPIRY_SECONDS
-    _confirmation_tokens[draft_id] = (token, expiry)
+    _confirmation_tokens[draft_id] = (token, time.time() + CONFIRMATION_TOKEN_EXPIRY_SECONDS)
     return token
 
 
 def _validate_confirmation_token(draft_id: str, token: str) -> tuple[bool, str | None]:
-    """Validate a confirmation token.
-
-    Returns (valid, error_message).
-    """
     if draft_id not in _confirmation_tokens:
-        return False, "No confirmation token found. Call clerk_send with confirm=false first."
-
+        return False, "No confirmation token found. Call clerk_send without token first."
     stored_token, expiry = _confirmation_tokens[draft_id]
-
     if time.time() > expiry:
         del _confirmation_tokens[draft_id]
-        return False, "Confirmation token expired. Call clerk_send with confirm=false to get a new one."
-
+        return False, "Confirmation token expired. Call clerk_send again to get a new one."
     if not secrets.compare_digest(token, stored_token):
         return False, "Invalid confirmation token."
-
-    # Token is valid, remove it (one-time use)
     del _confirmation_tokens[draft_id]
     return True, None
 
 
 def _cleanup_expired_tokens() -> None:
-    """Remove expired confirmation tokens."""
     now = time.time()
-    expired = [k for k, (_, expiry) in _confirmation_tokens.items() if now > expiry]
+    expired = [k for k, (_, exp) in _confirmation_tokens.items() if now > exp]
     for k in expired:
         del _confirmation_tokens[k]
 
 
 # ============================================================================
-# Tools
+# Tools (8)
 # ============================================================================
-
-
-@mcp.tool()
-def clerk_inbox(
-    limit: int = 20,
-    unread: bool = False,
-    account: str | None = None,
-) -> dict[str, Any]:
-    """List recent email conversations in inbox.
-
-    Args:
-        limit: Maximum number of conversations to return (default: 20)
-        unread: If true, only show unread conversations
-        account: Account name (uses default if not specified)
-
-    Returns:
-        Dictionary with list of conversation summaries
-    """
-    ensure_dirs()
-    api = get_api()
-
-    result = api.list_inbox(account=account, limit=limit, unread_only=unread)
-
-    return {
-        "account": result.account,
-        "conversations": [c.model_dump() for c in result.conversations],
-        "count": result.count,
-    }
-
-
-@mcp.tool()
-def clerk_show(conv_id: str) -> dict[str, Any]:
-    """Get full conversation or message details.
-
-    Supports prefix matching - if the prefix uniquely identifies a conversation,
-    it will be returned. If multiple conversations match, summaries are returned
-    for disambiguation.
-
-    Args:
-        conv_id: Conversation ID, unique prefix, or message ID
-
-    Returns:
-        Dictionary with one of:
-        - type="conversation" with full conversation details
-        - type="ambiguous" with list of matching conversation summaries
-        - type="message" with message details
-        - error if not found
-    """
-    ensure_dirs()
-    api = get_api()
-
-    # Try as conversation first (with prefix matching support)
-    result = api.resolve_conversation_id(conv_id)
-
-    if result.conversation:
-        return {
-            "type": "conversation",
-            "conversation": result.conversation.model_dump(),
-        }
-
-    if result.matches:
-        # Ambiguous prefix - return summaries for disambiguation
-        return {
-            "type": "ambiguous",
-            "prefix": conv_id,
-            "matches": [m.model_dump() for m in result.matches],
-            "count": len(result.matches),
-            "hint": "Use a longer prefix to uniquely identify the conversation.",
-        }
-
-    # Try as message ID
-    msg = api.get_message(conv_id)
-    if msg:
-        return {
-            "type": "message",
-            "message": msg.model_dump(),
-        }
-
-    return {"error": f"Not found: {conv_id}"}
-
-
-@mcp.tool()
-def clerk_search(
-    query: str,
-    limit: int = 20,
-    account: str | None = None,
-    advanced: bool = False,
-) -> dict[str, Any]:
-    """Search messages in cache using full-text search.
-
-    Supports operators like:
-    - from:alice
-    - subject:meeting
-    - body:quarterly
-    - has:attachment
-    - is:unread, is:read, is:flagged
-    - after:2025-01-01, before:2025-12-31
-
-    Args:
-        query: Search query string
-        limit: Maximum number of results (default: 20)
-        account: Account name (uses default if not specified)
-        advanced: Use advanced search with operator support (default: false)
-
-    Returns:
-        Dictionary with matching messages
-    """
-    ensure_dirs()
-    api = get_api()
-
-    if advanced:
-        result = api.search_advanced(query, account=account, limit=limit)
-    else:
-        result = api.search(query, account=account, limit=limit)
-
-    return {
-        "query": result.query,
-        "results": [m.model_dump() for m in result.messages],
-        "count": result.count,
-    }
-
-
-@mcp.tool()
-def clerk_search_sql(
-    sql: str,
-    limit: int = 100,
-) -> dict[str, Any]:
-    """Execute a raw SQL query on the messages table (power users).
-
-    Only SELECT queries are allowed. Use this for complex queries that
-    can't be expressed with the regular search operators.
-
-    Args:
-        sql: SQL SELECT query
-        limit: Maximum results (default: 100)
-
-    Returns:
-        Dictionary with matching messages or error
-    """
-    ensure_dirs()
-    api = get_api()
-
-    try:
-        messages = api.search_sql(sql, limit=limit)
-        return {
-            "results": [m.model_dump() for m in messages],
-            "count": len(messages),
-        }
-    except ValueError as e:
-        return {"error": str(e)}
 
 
 @mcp.tool()
@@ -215,43 +55,20 @@ def clerk_sql(
     query: str,
     limit: int = 100,
 ) -> dict[str, Any]:
-    """Execute a readonly SQL SELECT query on the clerk database.
+    """Execute a readonly SQL SELECT query on the clerk email cache.
 
-    Opens the database in readonly mode for safety. Returns raw rows as JSON.
-
-    ## Schema: messages table
-    | Column | Type | Description |
-    |--------|------|-------------|
-    | message_id | TEXT PK | RFC Message-ID |
-    | conv_id | TEXT | Conversation thread ID (12-char SHA256) |
-    | account | TEXT | Account name |
-    | folder | TEXT | IMAP folder |
-    | from_addr | TEXT | Sender email |
-    | from_name | TEXT | Sender display name |
-    | to_json | TEXT | Recipients JSON array |
-    | cc_json | TEXT | CC recipients JSON array |
-    | subject | TEXT | Subject line |
-    | date_utc | TEXT | ISO datetime |
-    | body_text | TEXT | Plain text body |
-    | body_html | TEXT | HTML body |
-    | flags | TEXT | JSON array of flags |
-    | attachments_json | TEXT | JSON array of attachments |
-    | in_reply_to | TEXT | Parent message ID |
-    | references_json | TEXT | Thread reference IDs |
-
-    ## FTS table: messages_fts
-    Full-text search on subject, body_text, from_addr, from_name.
+    Use the clerk://schema resource to discover tables and columns.
+    Returns raw rows as JSON dicts.
 
     Args:
-        query: SQL SELECT query
+        query: SQL SELECT query (only SELECT is allowed)
         limit: Maximum results (default: 100)
 
     Returns:
-        Dictionary with rows (list of dicts) and count
+        Dictionary with rows (list of dicts) and count, or error
     """
     ensure_dirs()
     api = get_api()
-
     try:
         rows = api.cache.execute_readonly_sql(query, limit=limit)
         return {"rows": rows, "count": len(rows)}
@@ -262,115 +79,168 @@ def clerk_sql(
 
 
 @mcp.tool()
+def clerk_sync(
+    account: str | None = None,
+    folder: str = "INBOX",
+    full: bool = False,
+) -> dict[str, Any]:
+    """Sync email cache from IMAP server.
+
+    By default, only fetches new messages since last sync (incremental).
+    Use full=True to re-fetch everything in the folder.
+
+    Args:
+        account: Account name (syncs default account if not specified)
+        folder: Folder to sync (default: INBOX)
+        full: Re-fetch all messages instead of incremental sync
+
+    Returns:
+        Dictionary with synced count, account, folder
+    """
+    ensure_dirs()
+    api = get_api()
+    try:
+        return api.sync_folder(account=account, folder=folder, full=full)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def clerk_reply(
+    message_id: str,
+    body: str,
+    reply_all: bool = False,
+    account: str | None = None,
+) -> dict[str, Any]:
+    """Reply to an email message.
+
+    Auto-populates To, Cc (if reply_all), Subject, In-Reply-To, and References.
+    Creates a draft and returns a preview for user confirmation.
+    If the user approves, call clerk_send with the draft_id to send.
+
+    Args:
+        message_id: Message ID to reply to
+        body: Reply body text
+        reply_all: Include all original recipients in reply
+        account: Account to send from (uses default if not specified)
+
+    Returns:
+        Dictionary with draft_id, preview, to, cc, subject for user confirmation,
+        or error if message not found
+    """
+    ensure_dirs()
+    api = get_api()
+
+    # Find the original message to get its conversation
+    msg = api.cache.get_message(message_id)
+    if not msg:
+        return {"error": f"Message not found: {message_id}. Try running clerk_sync first."}
+
+    try:
+        draft = api.drafts.create_reply(
+            account=account or msg.account,
+            conv_id=msg.conv_id,
+            body_text=body,
+            reply_all=reply_all,
+        )
+
+        preview = f"To: {', '.join(str(a) for a in draft.to)}\n"
+        if draft.cc:
+            preview += f"Cc: {', '.join(str(a) for a in draft.cc)}\n"
+        preview += f"Subject: {draft.subject}\n\n{draft.body_text}"
+
+        return {
+            "draft_id": draft.draft_id,
+            "to": [str(a) for a in draft.to],
+            "cc": [str(a) for a in draft.cc],
+            "subject": draft.subject,
+            "preview": preview,
+            "message": "Show this preview to the user. If they approve, call clerk_send to send.",
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
 def clerk_draft(
     to: str,
     subject: str,
     body: str,
     cc: str | None = None,
-    reply_to: str | None = None,
     account: str | None = None,
 ) -> dict[str, Any]:
-    """Create a new email draft.
+    """Compose a new email (not a reply).
+
+    Creates a draft and returns a preview for user confirmation.
+    If the user approves, call clerk_send with the draft_id to send.
 
     Args:
         to: Recipient email address (or comma-separated list)
         subject: Subject line
         body: Message body text
         cc: CC recipients (comma-separated, optional)
-        reply_to: Conversation ID to reply to (optional)
-        account: Account name (uses default if not specified)
+        account: Account to send from (uses default if not specified)
 
     Returns:
-        Dictionary with draft_id of created draft
+        Dictionary with draft_id and preview for user confirmation
     """
     ensure_dirs()
     api = get_api()
 
-    # Parse addresses
     to_addrs = [a.strip() for a in to.split(",")]
     cc_addrs = [a.strip() for a in cc.split(",")] if cc else None
 
-    draft = api.create_draft(
-        to=to_addrs,
-        subject=subject,
-        body=body,
-        cc=cc_addrs,
-        reply_to_conv_id=reply_to,
-        account=account,
-    )
+    try:
+        draft = api.create_draft(
+            to=to_addrs,
+            subject=subject,
+            body=body,
+            cc=cc_addrs,
+            account=account,
+        )
 
-    return {
-        "draft_id": draft.draft_id,
-        "account": draft.account,
-        "to": [str(a) for a in draft.to],
-        "subject": draft.subject,
-        "created_at": draft.created_at.isoformat(),
-    }
+        preview = f"To: {', '.join(str(a) for a in draft.to)}\n"
+        if draft.cc:
+            preview += f"Cc: {', '.join(str(a) for a in draft.cc)}\n"
+        preview += f"Subject: {draft.subject}\n\n{draft.body_text}"
 
-
-@mcp.tool()
-def clerk_drafts(account: str | None = None) -> dict[str, Any]:
-    """List all pending drafts.
-
-    Args:
-        account: Account name to filter by (optional)
-
-    Returns:
-        Dictionary with list of drafts
-    """
-    ensure_dirs()
-    api = get_api()
-
-    drafts = api.list_drafts(account=account)
-
-    return {
-        "drafts": [
-            {
-                "draft_id": d.draft_id,
-                "account": d.account,
-                "to": [str(a) for a in d.to],
-                "subject": d.subject,
-                "created_at": d.created_at.isoformat(),
-            }
-            for d in drafts
-        ],
-        "count": len(drafts),
-    }
+        return {
+            "draft_id": draft.draft_id,
+            "preview": preview,
+            "message": "Show this preview to the user. If they approve, call clerk_send to send.",
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @mcp.tool()
 def clerk_send(
     draft_id: str,
-    confirm: bool = False,
     token: str | None = None,
 ) -> dict[str, Any]:
-    """Send a draft message with two-step confirmation.
+    """Send a draft email with two-step confirmation.
 
-    Step 1: Call with confirm=false to get a preview and confirmation token.
-    Step 2: Call with confirm=true and the token to actually send.
+    Step 1: Call without token — returns preview and a confirmation token.
+    Step 2: Call with the token — actually sends the email.
 
     Args:
         draft_id: ID of the draft to send
-        confirm: If true, confirms and sends (requires token)
-        token: Confirmation token (required when confirm=true)
+        token: Confirmation token from step 1 (required for step 2)
 
     Returns:
-        If confirm=false: Preview and confirmation token (valid for 5 minutes)
-        If confirm=true: Send result with message_id or error
+        Step 1: Preview + token (valid 5 minutes)
+        Step 2: Send result with message_id
     """
     ensure_dirs()
     _cleanup_expired_tokens()
-
     api = get_api()
-    draft = api.get_draft(draft_id)
 
+    draft = api.get_draft(draft_id)
     if not draft:
         return {"error": f"Draft not found: {draft_id}"}
 
-    if not confirm:
-        # Step 1: Generate preview and token
-        from .smtp_client import check_send_allowed, format_draft_preview
-
+    if token is None:
+        # Step 1: generate preview and token
         allowed, error = check_send_allowed(draft, draft.account)
         if not allowed:
             return {"error": error}
@@ -382,18 +252,14 @@ def clerk_send(
             "preview": format_draft_preview(draft),
             "token": confirmation_token,
             "expires_in_seconds": CONFIRMATION_TOKEN_EXPIRY_SECONDS,
-            "message": "Call clerk_send again with confirm=true and this token to send.",
+            "message": "Call clerk_send again with this token to send.",
         }
 
-    # Step 2: Validate token and send
-    if not token:
-        return {"error": "Token required when confirm=true"}
-
+    # Step 2: validate and send
     valid, error = _validate_confirmation_token(draft_id, token)
     if not valid:
         return {"error": error}
 
-    # Send the draft
     result = api.send_draft(draft_id, skip_confirmation=True)
 
     if result.success:
@@ -402,75 +268,7 @@ def clerk_send(
             "message_id": result.message_id,
             "timestamp": result.timestamp.isoformat(),
         }
-    else:
-        return {
-            "status": "failed",
-            "error": result.error,
-        }
-
-
-@mcp.tool()
-def clerk_delete_draft(draft_id: str) -> dict[str, Any]:
-    """Delete a draft without sending.
-
-    Args:
-        draft_id: ID of the draft to delete
-
-    Returns:
-        Dictionary with success status
-    """
-    ensure_dirs()
-    api = get_api()
-
-    if api.delete_draft(draft_id):
-        # Also cleanup any pending confirmation token
-        _confirmation_tokens.pop(draft_id, None)
-
-        return {"status": "deleted", "draft_id": draft_id}
-    else:
-        return {"error": f"Draft not found: {draft_id}"}
-
-
-@mcp.tool()
-def clerk_mark_read(message_id: str, account: str | None = None) -> dict[str, Any]:
-    """Mark a message as read.
-
-    Args:
-        message_id: ID of the message to mark as read
-        account: Account name (uses default if not specified)
-
-    Returns:
-        Dictionary with success status
-    """
-    ensure_dirs()
-    api = get_api()
-
-    try:
-        api.mark_read(message_id, account=account)
-        return {"status": "success", "message_id": message_id}
-    except Exception as e:
-        return {"error": str(e)}
-
-
-@mcp.tool()
-def clerk_archive(message_id: str, account: str | None = None) -> dict[str, Any]:
-    """Archive a message.
-
-    Args:
-        message_id: ID of the message to archive
-        account: Account name (uses default if not specified)
-
-    Returns:
-        Dictionary with success status
-    """
-    ensure_dirs()
-    api = get_api()
-
-    try:
-        api.archive_message(message_id, account=account)
-        return {"status": "success", "message_id": message_id, "folder": "Archive"}
-    except Exception as e:
-        return {"error": str(e)}
+    return {"status": "failed", "error": result.error}
 
 
 @mcp.tool()
@@ -480,12 +278,14 @@ def clerk_move(
     from_folder: str = "INBOX",
     account: str | None = None,
 ) -> dict[str, Any]:
-    """Move a message to another folder.
+    """Move an email message to another folder.
+
+    Use clerk://folders resource to see available folders.
 
     Args:
-        message_id: ID of the message to move
-        to_folder: Destination folder name (e.g., "Archive", "Trash")
-        from_folder: Source folder (default: "INBOX")
+        message_id: Message ID to move
+        to_folder: Destination folder (e.g., "Archive", "Trash")
+        from_folder: Source folder (default: INBOX)
         account: Account name (uses default if not specified)
 
     Returns:
@@ -493,7 +293,6 @@ def clerk_move(
     """
     ensure_dirs()
     api = get_api()
-
     try:
         api.move_message(message_id, to_folder, from_folder=from_folder, account=account)
         return {"status": "success", "message_id": message_id, "folder": to_folder}
@@ -504,14 +303,14 @@ def clerk_move(
 @mcp.tool()
 def clerk_flag(
     message_id: str,
-    unflag: bool = False,
+    action: Literal["flag", "unflag", "read", "unread"],
     account: str | None = None,
 ) -> dict[str, Any]:
-    """Flag or unflag a message.
+    """Flag/unflag or mark read/unread on an email message.
 
     Args:
-        message_id: ID of the message
-        unflag: If true, remove the flag instead of adding it
+        message_id: Message ID
+        action: One of "flag", "unflag", "read", "unread"
         account: Account name (uses default if not specified)
 
     Returns:
@@ -519,119 +318,125 @@ def clerk_flag(
     """
     ensure_dirs()
     api = get_api()
-
     try:
-        if unflag:
-            api.unflag_message(message_id, account=account)
-        else:
+        if action == "flag":
             api.flag_message(message_id, account=account)
-        return {"status": "success", "message_id": message_id, "flagged": not unflag}
+        elif action == "unflag":
+            api.unflag_message(message_id, account=account)
+        elif action == "read":
+            api.mark_read(message_id, account=account)
+        elif action == "unread":
+            api.mark_unread(message_id, account=account)
+        else:
+            return {"error": f"Invalid action: {action}. Use flag, unflag, read, or unread."}
+        return {"status": "success", "message_id": message_id, "action": action}
     except Exception as e:
         return {"error": str(e)}
-
-
-@mcp.tool()
-def clerk_mark_unread(
-    message_id: str,
-    account: str | None = None,
-) -> dict[str, Any]:
-    """Mark a message as unread.
-
-    Args:
-        message_id: ID of the message to mark as unread
-        account: Account name (uses default if not specified)
-
-    Returns:
-        Dictionary with success status
-    """
-    ensure_dirs()
-    api = get_api()
-
-    try:
-        api.mark_unread(message_id, account=account)
-        return {"status": "success", "message_id": message_id}
-    except Exception as e:
-        return {"error": str(e)}
-
-
-@mcp.tool()
-def clerk_attachments(message_id: str) -> dict[str, Any]:
-    """List attachments for a message.
-
-    Args:
-        message_id: ID of the message
-
-    Returns:
-        Dictionary with list of attachments
-    """
-    ensure_dirs()
-    api = get_api()
-
-    attachments = api.list_attachments(message_id)
-
-    if not attachments:
-        msg = api.get_message(message_id)
-        if not msg:
-            return {"error": f"Message not found: {message_id}"}
-
-    return {
-        "message_id": message_id,
-        "attachments": attachments,
-        "count": len(attachments),
-    }
 
 
 @mcp.tool()
 def clerk_status() -> dict[str, Any]:
-    """Get clerk status and connection info.
+    """Get clerk status — version, accounts, connection health.
 
     Returns:
-        Dictionary with version and account connection status
+        Dictionary with version and per-account connection status
     """
     ensure_dirs()
     api = get_api()
-
     return api.get_status()
 
 
 # ============================================================================
-# Resources
+# Resources (3)
 # ============================================================================
 
+EXAMPLE_QUERIES = """
+## Example Queries
 
-@mcp.resource("clerk://inbox")
-def resource_inbox() -> str:
-    """Current inbox state as JSON."""
-    result = clerk_inbox()
-    import json
+```sql
+-- Inbox: recent conversations
+SELECT conv_id, from_addr, from_name, subject, date_utc, flags
+FROM messages WHERE folder='INBOX' AND account='siue'
+ORDER BY date_utc DESC LIMIT 20
 
-    return json.dumps(result, default=str, indent=2)
+-- Thread history (for context before replying)
+SELECT message_id, from_addr, from_name, subject, date_utc, body_text
+FROM messages WHERE conv_id = 'abc123def456'
+ORDER BY date_utc ASC
+
+-- Unread counts by folder
+SELECT folder, COUNT(*) as unread
+FROM messages WHERE flags NOT LIKE '%"seen"%'
+GROUP BY folder
+
+-- Full-text search
+SELECT m.message_id, m.from_addr, m.subject, m.date_utc
+FROM messages_fts f
+JOIN messages m ON m.rowid = f.rowid
+WHERE messages_fts MATCH 'quarterly report'
+ORDER BY m.date_utc DESC LIMIT 20
+
+-- Priority senders (combine with clerk://config priorities)
+SELECT message_id, from_addr, subject, date_utc
+FROM messages
+WHERE from_addr LIKE '%@siue.edu%' AND flags NOT LIKE '%"seen"%'
+ORDER BY date_utc DESC
+
+-- Attachments for a message
+SELECT attachments_json FROM messages WHERE message_id = '<msg-id>'
+
+-- Pending drafts
+SELECT * FROM drafts ORDER BY updated_at DESC
+
+-- Send audit log
+SELECT * FROM send_log ORDER BY timestamp DESC LIMIT 10
+```
+"""
 
 
-@mcp.resource("clerk://conversation/{conv_id}")
-def resource_conversation(conv_id: str) -> str:
-    """Specific conversation thread as JSON."""
-    result = clerk_show(conv_id)
-    import json
-
-    return json.dumps(result, default=str, indent=2)
+@mcp.resource("clerk://schema")
+def resource_schema() -> str:
+    """Database schema and example queries for clerk_sql."""
+    return SCHEMA + "\n" + EXAMPLE_QUERIES
 
 
-@mcp.resource("clerk://draft/{draft_id}")
-def resource_draft(draft_id: str) -> str:
-    """Pending draft content as JSON."""
-    ensure_dirs()
+@mcp.resource("clerk://config")
+def resource_config() -> str:
+    """Clerk configuration: accounts, priorities, settings (sensitive fields redacted)."""
+    config = get_config()
+    data: dict[str, Any] = {
+        "default_account": config.default_account,
+        "accounts": {},
+        "priorities": {
+            "senders": config.priorities.senders,
+            "topics": config.priorities.topics,
+        },
+        "cache": {
+            "window_days": config.cache.window_days,
+            "inbox_freshness_min": config.cache.inbox_freshness_min,
+        },
+    }
+    for name, acct in config.accounts.items():
+        data["accounts"][name] = {
+            "protocol": acct.protocol,
+            "from": acct.from_.address,
+        }
+    return json.dumps(data, indent=2)
+
+
+@mcp.resource("clerk://folders")
+def resource_folders() -> str:
+    """Available email folders per account."""
     api = get_api()
-
-    draft = api.get_draft(draft_id)
-    if not draft:
-        import json
-
-        return json.dumps({"error": f"Draft not found: {draft_id}"})
-
-    import json
-
-    return json.dumps(draft.model_dump(), default=str, indent=2)
+    config = get_config()
+    result: dict[str, list[str]] = {}
+    for name in config.accounts:
+        try:
+            folders = api.list_folders(account=name)
+            result[name] = [f.name for f in folders]
+        except Exception as e:
+            result[name] = [f"Error: {e}"]
+    return json.dumps(result, indent=2)
 
 
 # ============================================================================

@@ -1,0 +1,340 @@
+"""Tests for the redesigned MCP server (8 tools + 3 resources)."""
+
+import json
+from datetime import UTC, datetime
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from clerk.cache import Cache
+from clerk.config import (
+    AccountConfig,
+    ClerkConfig,
+    FromAddress,
+    ImapConfig,
+    PrioritiesConfig,
+    SmtpConfig,
+)
+from clerk.models import Address, Message, MessageFlag
+
+
+@pytest.fixture
+def populated_cache(tmp_path):
+    """Create a cache with test messages."""
+    cache = Cache(tmp_path / "test.db")
+    msg1 = Message(
+        message_id="<msg1@example.com>",
+        conv_id="conv001",
+        account="test",
+        folder="INBOX",
+        **{"from": Address(addr="alice@example.com", name="Alice")},
+        to=[Address(addr="test@example.com", name="Test")],
+        subject="Hello",
+        date=datetime(2026, 3, 1, tzinfo=UTC),
+        body_text="Hello body",
+        flags=[],
+    )
+    msg2 = Message(
+        message_id="<msg2@example.com>",
+        conv_id="conv001",
+        account="test",
+        folder="INBOX",
+        **{"from": Address(addr="test@example.com", name="Test")},
+        to=[Address(addr="alice@example.com", name="Alice")],
+        subject="Re: Hello",
+        date=datetime(2026, 3, 2, tzinfo=UTC),
+        body_text="Reply body",
+        flags=[MessageFlag.SEEN],
+        in_reply_to="<msg1@example.com>",
+        references=["<msg1@example.com>"],
+    )
+    cache.store_message(msg1)
+    cache.store_message(msg2)
+    return cache
+
+
+@pytest.fixture
+def mock_config():
+    return ClerkConfig(
+        accounts={
+            "test": AccountConfig(
+                protocol="imap",
+                imap=ImapConfig(host="localhost", username="test"),
+                smtp=SmtpConfig(host="localhost", username="test"),
+                **{"from": FromAddress(address="test@example.com", name="Test User")},
+            ),
+        },
+        default_account="test",
+        priorities=PrioritiesConfig(
+            senders=["alice@example.com", "@siue.edu"],
+            topics=["IDOT", "scanner"],
+        ),
+    )
+
+
+# --- clerk_sql ---
+
+class TestClerkSql:
+    @patch("clerk.mcp_server.get_api")
+    @patch("clerk.mcp_server.ensure_dirs")
+    def test_select_returns_rows(self, _dirs, mock_get_api, populated_cache):
+        from clerk.mcp_server import clerk_sql
+
+        mock_api = MagicMock()
+        mock_api.cache = populated_cache
+        mock_get_api.return_value = mock_api
+
+        result = clerk_sql(query="SELECT message_id, subject FROM messages ORDER BY date_utc")
+        assert result["count"] == 2
+        assert result["rows"][0]["subject"] == "Hello"
+
+    @patch("clerk.mcp_server.get_api")
+    @patch("clerk.mcp_server.ensure_dirs")
+    def test_rejects_non_select(self, _dirs, mock_get_api, populated_cache):
+        from clerk.mcp_server import clerk_sql
+
+        mock_api = MagicMock()
+        mock_api.cache = populated_cache
+        mock_get_api.return_value = mock_api
+
+        result = clerk_sql(query="DELETE FROM messages")
+        assert "error" in result
+
+
+# --- clerk_sync ---
+
+class TestClerkSync:
+    @patch("clerk.mcp_server.get_api")
+    @patch("clerk.mcp_server.ensure_dirs")
+    def test_sync_calls_api(self, _dirs, mock_get_api):
+        from clerk.mcp_server import clerk_sync
+
+        mock_api = MagicMock()
+        mock_api.sync_folder.return_value = {"synced": 5, "account": "test", "folder": "INBOX"}
+        mock_get_api.return_value = mock_api
+
+        result = clerk_sync(account="test")
+        assert result["synced"] == 5
+        mock_api.sync_folder.assert_called_once_with(account="test", folder="INBOX", full=False)
+
+    @patch("clerk.mcp_server.get_api")
+    @patch("clerk.mcp_server.ensure_dirs")
+    def test_sync_full(self, _dirs, mock_get_api):
+        from clerk.mcp_server import clerk_sync
+
+        mock_api = MagicMock()
+        mock_api.sync_folder.return_value = {"synced": 100, "account": "test", "folder": "INBOX"}
+        mock_get_api.return_value = mock_api
+
+        clerk_sync(account="test", full=True)
+        mock_api.sync_folder.assert_called_once_with(account="test", folder="INBOX", full=True)
+
+
+# --- clerk_reply ---
+
+class TestClerkReply:
+    @patch("clerk.mcp_server.get_api")
+    @patch("clerk.mcp_server.ensure_dirs")
+    def test_reply_creates_draft(self, _dirs, mock_get_api, populated_cache):
+        from clerk.mcp_server import clerk_reply
+
+        mock_api = MagicMock()
+        mock_api.cache = populated_cache
+
+        # Mock create_reply to return a draft
+        mock_draft = MagicMock()
+        mock_draft.draft_id = "draft_abc"
+        mock_draft.to = [Address(addr="alice@example.com", name="Alice")]
+        mock_draft.cc = []
+        mock_draft.subject = "Re: Hello"
+        mock_draft.body_text = "Thanks for your message!"
+        mock_api.drafts.create_reply.return_value = mock_draft
+        mock_get_api.return_value = mock_api
+
+        result = clerk_reply(
+            message_id="<msg1@example.com>",
+            body="Thanks for your message!",
+        )
+
+        assert result["draft_id"] == "draft_abc"
+        assert "preview" in result
+        assert result["subject"] == "Re: Hello"
+
+    @patch("clerk.mcp_server.get_api")
+    @patch("clerk.mcp_server.ensure_dirs")
+    def test_reply_message_not_found(self, _dirs, mock_get_api):
+        from clerk.mcp_server import clerk_reply
+
+        mock_api = MagicMock()
+        mock_api.cache.get_message.return_value = None
+        mock_get_api.return_value = mock_api
+
+        result = clerk_reply(message_id="<nonexistent>", body="test")
+        assert "error" in result
+
+
+# --- clerk_draft ---
+
+class TestClerkDraft:
+    @patch("clerk.mcp_server.get_api")
+    @patch("clerk.mcp_server.ensure_dirs")
+    def test_draft_creates_new_message(self, _dirs, mock_get_api):
+        from clerk.mcp_server import clerk_draft
+
+        mock_draft = MagicMock()
+        mock_draft.draft_id = "draft_xyz"
+        mock_draft.to = [Address(addr="bob@example.com", name="")]
+        mock_draft.cc = []
+        mock_draft.subject = "New message"
+        mock_draft.body_text = "Hello Bob"
+
+        mock_api = MagicMock()
+        mock_api.create_draft.return_value = mock_draft
+        mock_get_api.return_value = mock_api
+
+        result = clerk_draft(to="bob@example.com", subject="New message", body="Hello Bob")
+        assert result["draft_id"] == "draft_xyz"
+        assert "preview" in result
+
+
+# --- clerk_send ---
+
+class TestClerkSend:
+    @patch("clerk.mcp_server.get_api")
+    @patch("clerk.mcp_server.ensure_dirs")
+    def test_send_step1_returns_token(self, _dirs, mock_get_api):
+        from clerk.mcp_server import clerk_send
+
+        mock_draft = MagicMock()
+        mock_draft.account = "test"
+        mock_draft.to = [Address(addr="bob@example.com", name="Bob")]
+        mock_draft.cc = []
+        mock_draft.subject = "Test"
+        mock_draft.body_text = "Test body"
+
+        mock_api = MagicMock()
+        mock_api.get_draft.return_value = mock_draft
+        mock_get_api.return_value = mock_api
+
+        with (
+            patch("clerk.mcp_server.check_send_allowed", return_value=(True, None)),
+            patch("clerk.mcp_server.format_draft_preview", return_value="Preview text"),
+        ):
+            result = clerk_send(draft_id="draft_1")
+
+        assert result["status"] == "pending_confirmation"
+        assert "token" in result
+
+
+# --- clerk_move ---
+
+class TestClerkMoveRedesign:
+    @patch("clerk.mcp_server.get_api")
+    @patch("clerk.mcp_server.ensure_dirs")
+    def test_move_success(self, _dirs, mock_get_api):
+        from clerk.mcp_server import clerk_move
+
+        mock_api = MagicMock()
+        mock_get_api.return_value = mock_api
+
+        result = clerk_move(message_id="<msg1>", to_folder="Archive")
+        assert result["status"] == "success"
+        mock_api.move_message.assert_called_once()
+
+
+# --- clerk_flag ---
+
+class TestClerkFlagRedesign:
+    @patch("clerk.mcp_server.get_api")
+    @patch("clerk.mcp_server.ensure_dirs")
+    def test_flag_action(self, _dirs, mock_get_api):
+        from clerk.mcp_server import clerk_flag
+
+        mock_api = MagicMock()
+        mock_get_api.return_value = mock_api
+
+        result = clerk_flag(message_id="<msg1>", action="flag")
+        assert result["status"] == "success"
+        mock_api.flag_message.assert_called_once()
+
+    @patch("clerk.mcp_server.get_api")
+    @patch("clerk.mcp_server.ensure_dirs")
+    def test_read_action(self, _dirs, mock_get_api):
+        from clerk.mcp_server import clerk_flag
+
+        mock_api = MagicMock()
+        mock_get_api.return_value = mock_api
+
+        result = clerk_flag(message_id="<msg1>", action="read")
+        assert result["status"] == "success"
+        mock_api.mark_read.assert_called_once()
+
+    @patch("clerk.mcp_server.get_api")
+    @patch("clerk.mcp_server.ensure_dirs")
+    def test_invalid_action(self, _dirs, mock_get_api):
+        from clerk.mcp_server import clerk_flag
+
+        mock_api = MagicMock()
+        mock_get_api.return_value = mock_api
+
+        result = clerk_flag(message_id="<msg1>", action="invalid")
+        assert "error" in result
+
+
+# --- clerk_status ---
+
+class TestClerkStatusRedesign:
+    @patch("clerk.mcp_server.get_api")
+    @patch("clerk.mcp_server.ensure_dirs")
+    def test_status(self, _dirs, mock_get_api):
+        from clerk.mcp_server import clerk_status
+
+        mock_api = MagicMock()
+        mock_api.get_status.return_value = {"version": "0.6.0", "accounts": {}}
+        mock_get_api.return_value = mock_api
+
+        result = clerk_status()
+        assert "version" in result
+
+
+# --- Resources ---
+
+class TestResources:
+    @patch("clerk.mcp_server.get_config")
+    def test_schema_resource(self, mock_get_config):
+        from clerk.mcp_server import resource_schema
+
+        result = resource_schema()
+        assert "messages" in result
+        assert "messages_fts" in result
+        assert "SELECT" in result  # Example queries
+
+    @patch("clerk.mcp_server.get_config")
+    def test_config_resource(self, mock_get_config, mock_config):
+        from clerk.mcp_server import resource_config
+
+        mock_get_config.return_value = mock_config
+        result = resource_config()
+        data = json.loads(result)
+        assert "accounts" in data
+        assert "priorities" in data
+        assert data["default_account"] == "test"
+
+    @patch("clerk.mcp_server.get_api")
+    @patch("clerk.mcp_server.get_config")
+    def test_folders_resource(self, mock_get_config, mock_get_api, mock_config):
+        from clerk.mcp_server import resource_folders
+        from clerk.models import FolderInfo
+
+        mock_get_config.return_value = mock_config
+        mock_api = MagicMock()
+        mock_api.list_folders.return_value = [
+            FolderInfo(name="INBOX"), FolderInfo(name="Sent"),
+        ]
+        mock_get_api.return_value = mock_api
+
+        result = resource_folders()
+        data = json.loads(result)
+        assert "test" in data
+        assert "INBOX" in data["test"]
+        assert "Sent" in data["test"]
