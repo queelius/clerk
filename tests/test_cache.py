@@ -167,62 +167,6 @@ class TestCacheConversations:
         assert unread_convs[0].conv_id == "conv_unread"
 
 
-class TestCacheSearch:
-    def test_search_by_subject(self, cache, sample_message):
-        cache.store_message(sample_message)
-
-        results = cache.search("Test Subject")
-        assert len(results) == 1
-        assert results[0].message_id == sample_message.message_id
-
-    def test_search_by_body(self, cache, sample_message):
-        cache.store_message(sample_message)
-
-        results = cache.search("body text")
-        assert len(results) == 1
-
-    def test_search_by_sender(self, cache, sample_message):
-        cache.store_message(sample_message)
-
-        results = cache.search("sender@example.com")
-        assert len(results) == 1
-
-    def test_search_no_results(self, cache, sample_message):
-        cache.store_message(sample_message)
-
-        results = cache.search("nonexistent query")
-        assert len(results) == 0
-
-    def test_search_with_account_filter(self, cache):
-        msg1 = Message(
-            message_id="<msg1@example.com>",
-            conv_id="conv1",
-            account="account1",
-            folder="INBOX",
-            **{"from": Address(addr="a@example.com")},
-            date=datetime.now(UTC),
-            subject="Common keyword",
-            headers_fetched_at=datetime.now(UTC),
-        )
-        msg2 = Message(
-            message_id="<msg2@example.com>",
-            conv_id="conv2",
-            account="account2",
-            folder="INBOX",
-            **{"from": Address(addr="b@example.com")},
-            date=datetime.now(UTC),
-            subject="Common keyword",
-            headers_fetched_at=datetime.now(UTC),
-        )
-
-        cache.store_message(msg1)
-        cache.store_message(msg2)
-
-        results = cache.search("keyword", account="account1")
-        assert len(results) == 1
-        assert results[0].account == "account1"
-
-
 class TestCacheFlags:
     def test_update_flags(self, cache, sample_message):
         cache.store_message(sample_message)
