@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from clerk.api import ClerkAPI, get_api
+from clerk.api import ClerkAPI, get_api, html_to_text
 from clerk.cache import Cache
 from clerk.config import AccountConfig, ClerkConfig, FromAddress, ImapConfig, SmtpConfig
 from clerk.drafts import DraftManager
@@ -65,6 +65,35 @@ def api(mock_config, cache, draft_manager, monkeypatch):
     """Create a ClerkAPI instance with mocked dependencies."""
     monkeypatch.setattr("clerk.api.ensure_dirs", lambda: None)
     return ClerkAPI(config=mock_config, cache=cache, draft_manager=draft_manager)
+
+
+class TestHtmlToText:
+    def test_strips_tags(self):
+        assert html_to_text("<p>Hello <b>world</b></p>") == "Hello world"
+
+    def test_preserves_line_breaks(self):
+        result = html_to_text("Line 1<br>Line 2<br/>Line 3")
+        assert "Line 1\nLine 2\nLine 3" == result
+
+    def test_decodes_entities(self):
+        result = html_to_text("A &amp; B &lt; C &gt; D")
+        assert "A & B < C > D" == result
+
+    def test_strips_style_blocks(self):
+        result = html_to_text("<style>body{color:red}</style>Hello")
+        assert "Hello" == result
+
+    def test_real_outlook_fragment(self):
+        html = (
+            '<html><body><div class="WordSection1">'
+            "<p>Hi Alex,</p>"
+            "<p>I can&#8217;t believe you wrote another paper.</p>"
+            "</div></body></html>"
+        )
+        result = html_to_text(html)
+        assert "Hi Alex," in result
+        assert "can\u2019t believe" in result
+        assert "<" not in result
 
 
 class TestClerkAPIInit:

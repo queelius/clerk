@@ -4,6 +4,8 @@ This module provides a unified API that both the CLI and MCP server use.
 All email operations go through this layer to ensure consistent behavior.
 """
 
+import html
+import re
 from datetime import datetime
 from typing import Any
 
@@ -23,6 +25,23 @@ from .models import (
     UnreadCounts,
 )
 from .smtp_client import check_send_allowed, send_draft
+
+
+def html_to_text(html_body: str) -> str:
+    """Convert HTML email body to readable plain text.
+
+    Handles the common case of Exchange/Outlook HTML-only emails.
+    """
+    text = re.sub(r"<style[^>]*>.*?</style>", "", html_body, flags=re.DOTALL)
+    text = re.sub(r"<script[^>]*>.*?</script>", "", text, flags=re.DOTALL)
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"</p>", "\n\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"</div>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = html.unescape(text)
+    lines = [re.sub(r"[ \t]+", " ", line).strip() for line in text.splitlines()]
+    text = re.sub(r"\n{3,}", "\n\n", "\n".join(lines))
+    return text.strip()
 
 
 class ClerkAPI:
@@ -102,6 +121,8 @@ class ClerkAPI:
                         body_text, body_html = client.fetch_message_body(
                             msg.folder, msg.message_id
                         )
+                        if body_text is None and body_html:
+                            body_text = html_to_text(body_html)
                         self.cache.update_body(msg.message_id, body_text, body_html)
                         msg.body_text = body_text
                         msg.body_html = body_html
@@ -127,6 +148,8 @@ class ClerkAPI:
                 body_text, body_html = client.fetch_message_body(
                     msg.folder, msg.message_id
                 )
+                if body_text is None and body_html:
+                    body_text = html_to_text(body_html)
                 self.cache.update_body(msg.message_id, body_text, body_html)
                 msg.body_text = body_text
                 msg.body_html = body_html
