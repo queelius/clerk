@@ -5,19 +5,12 @@ build-backend = "hatchling.build"
 [project]
 name = "clerk"
 version = "0.7.0"
-description = "A thin CLI for LLM agents to interact with email via IMAP/SMTP"
+description = "An MCP server for LLM agents to interact with email via IMAP/SMTP"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
-authors = [{ name = "spinoza" }]
-keywords = ["email", "imap", "smtp", "cli", "llm", "agent"]
-
-[project.urls]
-Homepage = "https://github.com/spinoza/clerk"
-Repository = "https://github.com/spinoza/clerk.git"
-Issues = "https://github.com/spinoza/clerk/issues"
-Changelog = "https://github.com/spinoza/clerk/blob/main/CHANGELOG.md"
-
+authors = [{ name = "Alexander Towell", email = "lex@metafunctor.com" }]
+keywords = ["email", "imap", "smtp", "mcp", "llm", "agent"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
@@ -42,6 +35,11 @@ dependencies = [
     "msal>=1.24.0",
     "mcp>=1.7.0,<2",
 ]
+
+[project.urls]
+Homepage = "https://github.com/queelius/clerk"
+Repository = "https://github.com/queelius/clerk.git"
+Issues = "https://github.com/queelius/clerk/issues"
 
 [project.optional-dependencies]
 dev = [
