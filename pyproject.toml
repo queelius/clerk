@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "clerk"
+name = "email-clerk"
 version = "0.7.0"
 description = "An MCP server for LLM agents to interact with email via IMAP/SMTP"
 readme = "README.md"
