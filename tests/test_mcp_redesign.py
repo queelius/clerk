@@ -269,7 +269,7 @@ class TestClerkReplyRouting:
         )
         mock_get_api.return_value = mock_api
 
-        result = clerk_reply(message_id="<msg1>", body="reply body", reply_all=True)
+        clerk_reply(message_id="<msg1>", body="reply body", reply_all=True)
 
         mock_api.create_reply.assert_called_once_with(
             message_id="<msg1>",

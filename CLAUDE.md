@@ -43,14 +43,15 @@ mypy src
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  Entry Points: cli.py, shell.py, mcp_server.py              │
-│  (User/LLM-facing interfaces - thin wrappers)               │
+│  Entry Points                                                │
+│  ├── mcp_server.py  (8 tools + 3 resources — primary)       │
+│  └── cli.py  (~550 lines — setup/auth/debug only)           │
 └─────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
 │  api.py - ClerkAPI                                          │
-│  (Unified business logic layer - ALL operations go here)    │
+│  (Mutations, sync, status — reads via clerk_sql)            │
 └─────────────────────────────────────────────────────────────┘
                               │
           ┌───────────────────┼───────────────────┐
@@ -69,7 +70,7 @@ mypy src
 
 ### Key Design Principles
 
-1. **ClerkAPI is the single source of truth** - CLI, shell, and MCP server all call into `api.py`. Never bypass it.
+1. **ClerkAPI is the single source of truth** - CLI and MCP server call into `api.py` for mutations, sync, and status. Reads go through `clerk_sql` directly.
 
 2. **Cache-first architecture** - Messages are cached in SQLite with FTS5 for search. IMAP is only hit when cache is stale or explicitly bypassed with `--fresh`.
 
@@ -79,14 +80,15 @@ mypy src
 
 ### Key Modules
 
-- **api.py** - `ClerkAPI` class with all business logic. Use `get_api()` singleton.
+- **api.py** - `ClerkAPI` class handling mutations, sync, and status. Reads bypass it via `clerk_sql`. Use `get_api()` singleton.
 - **cache.py** - `Cache` class with SQLite + FTS5. Handles message storage, search, conversation threading.
 - **imap_client.py** - `ImapClient` with context manager support. Use `get_imap_client(account_name)`.
 - **smtp_client.py** - Async SMTP sending with safety checks.
 - **search.py** - Search query parser supporting operators like `from:`, `to:`, `has:attachment`, `is:unread`.
 - **threading.py** - Email threading using References/In-Reply-To headers.
 - **drafts.py** - Local draft storage in `~/.local/share/clerk/drafts/`.
-- **mcp_server.py** - FastMCP server for LLM integration. Two-step send confirmation is mandatory here.
+- **mcp_server.py** - Primary interface: FastMCP server with 8 tools + 3 resources. Two-step send confirmation is mandatory here.
+- **cli.py** - Setup, auth, and debug commands only (~550 lines).
 
 ### Conversation ID Prefix Matching
 
