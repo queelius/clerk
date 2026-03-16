@@ -1,4 +1,4 @@
-"""MCP Server for clerk — 8 tools + 3 resources for LLM email agents."""
+"""MCP Server for clerk — 9 tools + 3 resources for LLM email agents."""
 
 import json
 import secrets
@@ -47,8 +47,51 @@ def _cleanup_expired_tokens() -> None:
 
 
 # ============================================================================
-# Tools (8)
+# Tools (9)
 # ============================================================================
+
+
+@mcp.tool()
+def clerk_read(
+    message_id: str,
+) -> dict[str, Any]:
+    """Read a full email message, fetching body from IMAP if not cached.
+
+    Use clerk_sql to find message_ids, then clerk_read to get the full
+    body text for messages you want to read.
+
+    Args:
+        message_id: Message ID to read
+
+    Returns:
+        Dictionary with message fields including body_text, or error
+    """
+    ensure_dirs()
+    api = get_api()
+
+    try:
+        msg = api.get_message(message_id)
+        if not msg:
+            return {"error": f"Message not found: {message_id}. Try clerk_sync first."}
+
+        return {
+            "message_id": msg.message_id,
+            "from": str(msg.from_),
+            "to": [str(a) for a in msg.to],
+            "cc": [str(a) for a in msg.cc],
+            "subject": msg.subject,
+            "date": msg.date.isoformat(),
+            "body_text": msg.body_text,
+            "flags": [f.value for f in msg.flags],
+            "attachments": [
+                {"filename": a.filename, "size": a.size, "content_type": a.content_type}
+                for a in msg.attachments
+            ],
+            "in_reply_to": msg.in_reply_to,
+            "conv_id": msg.conv_id,
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @mcp.tool()

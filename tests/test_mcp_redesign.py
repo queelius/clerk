@@ -1,4 +1,4 @@
-"""Tests for the redesigned MCP server (8 tools + 3 resources)."""
+"""Tests for the redesigned MCP server (9 tools + 3 resources)."""
 
 import json
 import time
@@ -71,6 +71,53 @@ def mock_config():
             topics=["IDOT", "scanner"],
         ),
     )
+
+
+# --- clerk_read ---
+
+
+class TestClerkRead:
+    @patch("clerk.mcp_server.get_api")
+    @patch("clerk.mcp_server.ensure_dirs")
+    def test_read_fetches_body(self, mock_dirs, mock_get_api):
+        from clerk.mcp_server import clerk_read
+        from clerk.models import Address, Message, MessageFlag
+
+        mock_msg = Message(
+            message_id="<msg1>",
+            conv_id="abc123",
+            account="test",
+            folder="INBOX",
+            **{"from": Address(addr="alice@example.com", name="Alice")},
+            to=[Address(addr="bob@example.com", name="Bob")],
+            subject="Test Subject",
+            date=datetime.now(UTC),
+            body_text="Hello, this is the body.",
+            flags=[MessageFlag.SEEN],
+        )
+        mock_api = MagicMock()
+        mock_api.get_message.return_value = mock_msg
+        mock_get_api.return_value = mock_api
+
+        result = clerk_read(message_id="<msg1>")
+
+        mock_api.get_message.assert_called_once_with("<msg1>")
+        assert result["body_text"] == "Hello, this is the body."
+        assert result["subject"] == "Test Subject"
+        assert result["conv_id"] == "abc123"
+
+    @patch("clerk.mcp_server.get_api")
+    @patch("clerk.mcp_server.ensure_dirs")
+    def test_read_not_found(self, mock_dirs, mock_get_api):
+        from clerk.mcp_server import clerk_read
+
+        mock_api = MagicMock()
+        mock_api.get_message.return_value = None
+        mock_get_api.return_value = mock_api
+
+        result = clerk_read(message_id="<nonexistent>")
+        assert "error" in result
+        assert "not found" in result["error"].lower()
 
 
 # --- Confirmation tokens ---
