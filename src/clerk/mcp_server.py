@@ -3,6 +3,7 @@
 import json
 import secrets
 import time
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
@@ -86,23 +87,40 @@ def clerk_sync(
 ) -> dict[str, Any]:
     """Sync email cache from IMAP server.
 
+    When called with no account, syncs all configured accounts.
     By default, only fetches new messages since last sync (incremental).
-    Use full=True to re-fetch everything in the folder.
 
     Args:
-        account: Account name (syncs default account if not specified)
+        account: Account name (syncs all accounts if not specified)
         folder: Folder to sync (default: INBOX)
         full: Re-fetch all messages instead of incremental sync
 
     Returns:
-        Dictionary with synced count, account, folder
+        Per-account sync results with counts
     """
     ensure_dirs()
     api = get_api()
-    try:
-        return api.sync_folder(account=account, folder=folder, full=full)
-    except Exception as e:
-        return {"error": str(e)}
+
+    if account is not None:
+        # Single account mode
+        try:
+            return api.sync_folder(account=account, folder=folder, full=full)
+        except Exception as e:
+            return {"error": str(e)}
+
+    # Sync all accounts
+    config = get_config()
+    results: dict[str, Any] = {"accounts": {}, "total_synced": 0}
+
+    for acct_name in config.accounts:
+        try:
+            result = api.sync_folder(account=acct_name, folder=folder, full=full)
+            results["accounts"][acct_name] = result
+            results["total_synced"] += result["synced"]
+        except Exception as e:
+            results["accounts"][acct_name] = {"error": str(e)}
+
+    return results
 
 
 @mcp.tool()
@@ -409,18 +427,38 @@ def resource_config() -> str:
     return json.dumps(data, indent=2)
 
 
+_FOLDER_CACHE_TTL_SECONDS = 3600  # 1 hour
+
+
 @mcp.resource("clerk://folders")
 def resource_folders() -> str:
-    """Available email folders per account."""
+    """Available email folders per account (cached 1 hour)."""
+    ensure_dirs()
     api = get_api()
     config = get_config()
     result: dict[str, list[str]] = {}
+
     for name in config.accounts:
+        cache_key = f"folders_{name}"
+        cached_json = api.cache.get_meta(cache_key)
+        cached_at_str = api.cache.get_meta(f"{cache_key}_at")
+
+        if cached_json and cached_at_str:
+            cached_at = datetime.fromisoformat(cached_at_str)
+            age = (datetime.now(UTC) - cached_at).total_seconds()
+            if age < _FOLDER_CACHE_TTL_SECONDS:
+                result[name] = json.loads(cached_json)
+                continue
+
         try:
             folders = api.list_folders(account=name)
-            result[name] = [f.name for f in folders]
+            folder_names = [f.name for f in folders]
+            result[name] = folder_names
+            api.cache.set_meta(cache_key, json.dumps(folder_names))
+            api.cache.set_meta(f"{cache_key}_at", datetime.now(UTC).isoformat())
         except Exception as e:
             result[name] = [f"Error: {e}"]
+
     return json.dumps(result, indent=2)
 
 

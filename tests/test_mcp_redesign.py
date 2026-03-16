@@ -454,7 +454,8 @@ class TestResources:
 
     @patch("clerk.mcp_server.get_api")
     @patch("clerk.mcp_server.get_config")
-    def test_folders_resource(self, mock_get_config, mock_get_api, mock_config):
+    @patch("clerk.mcp_server.ensure_dirs")
+    def test_folders_resource(self, mock_dirs, mock_get_config, mock_get_api, mock_config):
         from clerk.mcp_server import resource_folders
         from clerk.models import FolderInfo
 
@@ -463,6 +464,7 @@ class TestResources:
         mock_api.list_folders.return_value = [
             FolderInfo(name="INBOX"), FolderInfo(name="Sent"),
         ]
+        mock_api.cache.get_meta.return_value = None  # no cache
         mock_get_api.return_value = mock_api
 
         result = resource_folders()
@@ -470,3 +472,97 @@ class TestResources:
         assert "test" in data
         assert "INBOX" in data["test"]
         assert "Sent" in data["test"]
+
+
+# --- clerk_sync all-accounts mode ---
+
+class TestClerkSyncAll:
+    @patch("clerk.mcp_server.get_config")
+    @patch("clerk.mcp_server.get_api")
+    @patch("clerk.mcp_server.ensure_dirs")
+    def test_sync_all_accounts(self, mock_dirs, mock_get_api, mock_get_config):
+        from clerk.mcp_server import clerk_sync
+
+        mock_api = MagicMock()
+        mock_api.sync_folder.side_effect = [
+            {"synced": 5, "account": "siue", "folder": "INBOX"},
+            {"synced": 12, "account": "gmail", "folder": "INBOX"},
+        ]
+        mock_get_api.return_value = mock_api
+
+        mock_config = MagicMock()
+        mock_config.accounts = {"siue": MagicMock(), "gmail": MagicMock()}
+        mock_get_config.return_value = mock_config
+
+        result = clerk_sync()
+
+        assert result["total_synced"] == 17
+        assert result["accounts"]["siue"]["synced"] == 5
+        assert result["accounts"]["gmail"]["synced"] == 12
+        assert mock_api.sync_folder.call_count == 2
+
+    @patch("clerk.mcp_server.get_api")
+    @patch("clerk.mcp_server.ensure_dirs")
+    def test_sync_single_account(self, mock_dirs, mock_get_api):
+        from clerk.mcp_server import clerk_sync
+
+        mock_api = MagicMock()
+        mock_api.sync_folder.return_value = {"synced": 5, "account": "siue", "folder": "INBOX"}
+        mock_get_api.return_value = mock_api
+
+        result = clerk_sync(account="siue")
+
+        assert result["synced"] == 5
+        mock_api.sync_folder.assert_called_once_with(account="siue", folder="INBOX", full=False)
+
+
+# --- resource_folders caching ---
+
+class TestResourceFoldersCaching:
+    @patch("clerk.mcp_server.get_config")
+    @patch("clerk.mcp_server.get_api")
+    @patch("clerk.mcp_server.ensure_dirs")
+    def test_caches_folder_list(self, mock_dirs, mock_get_api, mock_get_config):
+        from clerk.mcp_server import resource_folders
+
+        mock_api = MagicMock()
+        mock_folder = MagicMock()
+        mock_folder.name = "INBOX"
+        mock_api.list_folders.return_value = [mock_folder]
+        mock_api.cache.get_meta.return_value = None  # no cache yet
+        mock_get_api.return_value = mock_api
+
+        mock_config = MagicMock()
+        mock_config.accounts = {"test": MagicMock()}
+        mock_get_config.return_value = mock_config
+
+        # First call hits IMAP
+        result = resource_folders()
+        assert '"INBOX"' in result
+        mock_api.list_folders.assert_called_once()
+        mock_api.cache.set_meta.assert_called()  # caches result
+
+    @patch("clerk.mcp_server.get_config")
+    @patch("clerk.mcp_server.get_api")
+    @patch("clerk.mcp_server.ensure_dirs")
+    def test_uses_cache_within_ttl(self, mock_dirs, mock_get_api, mock_get_config):
+        import json as json_mod
+        from datetime import UTC, datetime
+
+        from clerk.mcp_server import resource_folders
+
+        mock_api = MagicMock()
+        # Return cached data
+        mock_api.cache.get_meta.side_effect = lambda k: {
+            "folders_test": json_mod.dumps(["INBOX", "Sent"]),
+            "folders_test_at": datetime.now(UTC).isoformat(),
+        }.get(k)
+        mock_get_api.return_value = mock_api
+
+        mock_config = MagicMock()
+        mock_config.accounts = {"test": MagicMock()}
+        mock_get_config.return_value = mock_config
+
+        result = resource_folders()
+        assert "INBOX" in result
+        mock_api.list_folders.assert_not_called()  # did NOT hit IMAP
