@@ -182,13 +182,13 @@ Already implemented. Keep as-is after routing through `api.get_message()`.
 
 | Module | Before | After | Delta |
 |--------|--------|-------|-------|
-| cli.py | 1,363 | ~200 | -1,163 |
+| cli.py | 1,363 | ~550 | -813 |
 | shell.py | 544 | 0 | -544 |
 | api.py | 778 | ~450 | -328 |
 | cache.py | 798 | ~750 | -48 |
 | mcp_server.py | 449 | ~470 | +21 |
 | Others | 2,584 | 2,584 | 0 |
-| **Total** | **6,516** | **~4,454** | **-2,062** |
+| **Total** | **6,516** | **~4,804** | **-1,712** |
 
 ---
 
