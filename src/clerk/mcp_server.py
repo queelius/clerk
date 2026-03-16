@@ -114,9 +114,9 @@ def clerk_reply(
 ) -> dict[str, Any]:
     """Reply to an email message.
 
-    Auto-populates To, Cc (if reply_all), Subject, In-Reply-To, and References.
-    Creates a draft and returns a preview for user confirmation.
-    If the user approves, call clerk_send with the draft_id to send.
+    Creates a reply draft with auto-populated To, Cc, Subject, In-Reply-To,
+    and References headers. Call clerk_send with the returned draft_id to
+    preview and send.
 
     Args:
         message_id: Message ID to reply to
@@ -125,89 +125,74 @@ def clerk_reply(
         account: Account to send from (uses default if not specified)
 
     Returns:
-        Dictionary with draft_id, preview, to, cc, subject for user confirmation,
+        Dictionary with draft_id, to, cc, subject for user confirmation,
         or error if message not found
     """
     ensure_dirs()
     api = get_api()
 
-    # Find the original message to get its conversation
-    msg = api.cache.get_message(message_id)
-    if not msg:
-        return {"error": f"Message not found: {message_id}. Try running clerk_sync first."}
-
     try:
-        draft = api.drafts.create_reply(
-            account=account or msg.account,
-            conv_id=msg.conv_id,
-            body_text=body,
+        draft = api.create_reply(
+            message_id=message_id,
+            body=body,
             reply_all=reply_all,
+            account=account,
         )
-
-        preview = f"To: {', '.join(str(a) for a in draft.to)}\n"
-        if draft.cc:
-            preview += f"Cc: {', '.join(str(a) for a in draft.cc)}\n"
-        preview += f"Subject: {draft.subject}\n\n{draft.body_text}"
 
         return {
             "draft_id": draft.draft_id,
             "to": [str(a) for a in draft.to],
             "cc": [str(a) for a in draft.cc],
             "subject": draft.subject,
-            "preview": preview,
-            "message": "Show this preview to the user. If they approve, call clerk_send to send.",
+            "message": "Draft created. Call clerk_send to preview and send.",
         }
+    except ValueError as e:
+        return {"error": f"{e}. Try running clerk_sync first."}
     except Exception as e:
         return {"error": str(e)}
 
 
 @mcp.tool()
 def clerk_draft(
-    to: str,
+    to: list[str],
     subject: str,
     body: str,
-    cc: str | None = None,
+    cc: list[str] | None = None,
     account: str | None = None,
 ) -> dict[str, Any]:
     """Compose a new email (not a reply).
 
-    Creates a draft and returns a preview for user confirmation.
+    Creates a draft and returns metadata for user confirmation.
     If the user approves, call clerk_send with the draft_id to send.
 
     Args:
-        to: Recipient email address (or comma-separated list)
+        to: Recipient email addresses
         subject: Subject line
         body: Message body text
-        cc: CC recipients (comma-separated, optional)
+        cc: CC recipients (optional)
         account: Account to send from (uses default if not specified)
 
     Returns:
-        Dictionary with draft_id and preview for user confirmation
+        Dictionary with draft_id and metadata for user confirmation
     """
     ensure_dirs()
     api = get_api()
 
-    to_addrs = [a.strip() for a in to.split(",")]
-    cc_addrs = [a.strip() for a in cc.split(",")] if cc else None
-
     try:
         draft = api.create_draft(
-            to=to_addrs,
+            to=to,
             subject=subject,
             body=body,
-            cc=cc_addrs,
+            cc=cc,
             account=account,
         )
 
-        preview = f"To: {', '.join(str(a) for a in draft.to)}\n"
-        if draft.cc:
-            preview += f"Cc: {', '.join(str(a) for a in draft.cc)}\n"
-        preview += f"Subject: {draft.subject}\n\n{draft.body_text}"
-
         return {
             "draft_id": draft.draft_id,
-            "preview": preview,
-            "message": "Show this preview to the user. If they approve, call clerk_send to send.",
+            "to": [str(a) for a in draft.to],
+            "cc": [str(a) for a in draft.cc],
+            "subject": draft.subject,
+            "message": "Draft created. Call clerk_send to preview and send.",
         }
     except Exception as e:
         return {"error": str(e)}

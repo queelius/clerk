@@ -221,69 +221,112 @@ class TestClerkSync:
 
 # --- clerk_reply ---
 
-class TestClerkReply:
+class TestClerkReplyRouting:
+    """Test that clerk_reply routes through api.create_reply()."""
+
     @patch("clerk.mcp_server.get_api")
     @patch("clerk.mcp_server.ensure_dirs")
-    def test_reply_creates_draft(self, _dirs, mock_get_api, populated_cache):
+    def test_reply_calls_api_create_reply(self, mock_dirs, mock_get_api):
         from clerk.mcp_server import clerk_reply
+        from clerk.models import Address, Draft
 
         mock_api = MagicMock()
-        mock_api.cache = populated_cache
-
-        # Mock create_reply to return a draft
-        mock_draft = MagicMock()
-        mock_draft.draft_id = "draft_abc"
-        mock_draft.to = [Address(addr="alice@example.com", name="Alice")]
-        mock_draft.cc = []
-        mock_draft.subject = "Re: Hello"
-        mock_draft.body_text = "Thanks for your message!"
-        mock_api.drafts.create_reply.return_value = mock_draft
+        mock_api.create_reply.return_value = Draft(
+            draft_id="d1",
+            account="test",
+            to=[Address(addr="alice@example.com", name="Alice")],
+            cc=[],
+            subject="Re: Test",
+            body_text="reply body",
+        )
         mock_get_api.return_value = mock_api
 
-        result = clerk_reply(
-            message_id="<msg1@example.com>",
-            body="Thanks for your message!",
+        result = clerk_reply(message_id="<msg1>", body="reply body")
+
+        mock_api.create_reply.assert_called_once_with(
+            message_id="<msg1>",
+            body="reply body",
+            reply_all=False,
+            account=None,
+        )
+        assert result["draft_id"] == "d1"
+        assert "preview" not in result  # no redundant preview
+
+    @patch("clerk.mcp_server.get_api")
+    @patch("clerk.mcp_server.ensure_dirs")
+    def test_reply_with_reply_all(self, mock_dirs, mock_get_api):
+        from clerk.mcp_server import clerk_reply
+        from clerk.models import Address, Draft
+
+        mock_api = MagicMock()
+        mock_api.create_reply.return_value = Draft(
+            draft_id="d1",
+            account="test",
+            to=[Address(addr="alice@example.com", name="Alice")],
+            cc=[Address(addr="bob@example.com", name="Bob")],
+            subject="Re: Test",
+            body_text="reply body",
+        )
+        mock_get_api.return_value = mock_api
+
+        result = clerk_reply(message_id="<msg1>", body="reply body", reply_all=True)
+
+        mock_api.create_reply.assert_called_once_with(
+            message_id="<msg1>",
+            body="reply body",
+            reply_all=True,
+            account=None,
         )
 
-        assert result["draft_id"] == "draft_abc"
-        assert "preview" in result
-        assert result["subject"] == "Re: Hello"
-
     @patch("clerk.mcp_server.get_api")
     @patch("clerk.mcp_server.ensure_dirs")
-    def test_reply_message_not_found(self, _dirs, mock_get_api):
+    def test_reply_message_not_found(self, mock_dirs, mock_get_api):
         from clerk.mcp_server import clerk_reply
 
         mock_api = MagicMock()
-        mock_api.cache.get_message.return_value = None
+        mock_api.create_reply.side_effect = ValueError("Message not found: <msg1>")
         mock_get_api.return_value = mock_api
 
-        result = clerk_reply(message_id="<nonexistent>", body="test")
+        result = clerk_reply(message_id="<msg1>", body="reply body")
         assert "error" in result
+        assert "not found" in result["error"].lower()
 
 
 # --- clerk_draft ---
 
-class TestClerkDraft:
+class TestClerkDraftListParams:
     @patch("clerk.mcp_server.get_api")
     @patch("clerk.mcp_server.ensure_dirs")
-    def test_draft_creates_new_message(self, _dirs, mock_get_api):
+    def test_draft_with_list_params(self, mock_dirs, mock_get_api):
         from clerk.mcp_server import clerk_draft
-
-        mock_draft = MagicMock()
-        mock_draft.draft_id = "draft_xyz"
-        mock_draft.to = [Address(addr="bob@example.com", name="")]
-        mock_draft.cc = []
-        mock_draft.subject = "New message"
-        mock_draft.body_text = "Hello Bob"
+        from clerk.models import Address, Draft
 
         mock_api = MagicMock()
-        mock_api.create_draft.return_value = mock_draft
+        mock_api.create_draft.return_value = Draft(
+            draft_id="d1",
+            account="test",
+            to=[Address(addr="alice@example.com", name="")],
+            cc=[Address(addr="bob@example.com", name="")],
+            subject="Test",
+            body_text="body",
+        )
         mock_get_api.return_value = mock_api
 
-        result = clerk_draft(to="bob@example.com", subject="New message", body="Hello Bob")
-        assert result["draft_id"] == "draft_xyz"
-        assert "preview" in result
+        result = clerk_draft(
+            to=["alice@example.com"],
+            subject="Test",
+            body="body",
+            cc=["bob@example.com"],
+        )
+
+        assert result["draft_id"] == "d1"
+        mock_api.create_draft.assert_called_once_with(
+            to=["alice@example.com"],
+            subject="Test",
+            body="body",
+            cc=["bob@example.com"],
+            account=None,
+        )
 
 
 # --- clerk_send ---
