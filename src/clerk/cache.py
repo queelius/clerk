@@ -533,6 +533,22 @@ class Cache:
                 (f"inbox_sync_{account}", datetime.now(UTC).isoformat()),
             )
 
+    def get_meta(self, key: str) -> str | None:
+        """Get a value from cache_meta."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT value FROM cache_meta WHERE key = ?", (key,)
+            ).fetchone()
+            return row["value"] if row else None
+
+    def set_meta(self, key: str, value: str) -> None:
+        """Set a value in cache_meta."""
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO cache_meta (key, value) VALUES (?, ?)",
+                (key, value),
+            )
+
     def prune_old_messages(self, window_days: int = 7) -> int:
         """Remove messages older than the cache window. Returns count deleted."""
         cutoff = datetime.now(UTC) - timedelta(days=window_days)
