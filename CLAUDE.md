@@ -92,10 +92,10 @@ mypy src
 
 ### Conversation ID Prefix Matching
 
-Conversation IDs are 12-char SHA256 prefixes. The system supports prefix matching:
+Conversation IDs are 12-char SHA256 prefixes. The cache supports prefix matching:
 - Unique prefix → returns the conversation
 - Ambiguous prefix → returns list of `ConversationSummary` for disambiguation
-- Use `api.resolve_conversation_id()` for graceful handling
+- Use `cache.find_conversations_by_prefix()` or `clerk_sql` with `WHERE conv_id LIKE 'prefix%'`
 
 ### Data Locations
 
