@@ -1,11 +1,11 @@
 """Tests for ClerkAPI."""
 
 from datetime import UTC, datetime
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from clerk.api import ClerkAPI, InboxResult, SearchResult, get_api
+from clerk.api import ClerkAPI, get_api
 from clerk.cache import Cache
 from clerk.config import AccountConfig, ClerkConfig, FromAddress, ImapConfig, SmtpConfig
 from clerk.drafts import DraftManager
@@ -96,18 +96,6 @@ class TestClerkAPIInit:
 class TestInbox:
     """Tests for inbox operations."""
 
-    def test_list_inbox_from_cache(self, api, cache, sample_message):
-        """Test listing inbox from cache."""
-        # Store message in cache
-        cache.store_message(sample_message)
-        cache.mark_inbox_synced("test")
-
-        result = api.list_inbox(account="test")
-
-        assert isinstance(result, InboxResult)
-        assert result.account == "test"
-        assert result.from_cache is True
-
     def test_get_conversation(self, api, cache, sample_message):
         """Test getting a conversation."""
         cache.store_message(sample_message)
@@ -137,47 +125,6 @@ class TestInbox:
         """Test getting a non-existent message."""
         msg = api.get_message("<nonexistent@example.com>")
         assert msg is None
-
-
-class TestSearch:
-    """Tests for search operations."""
-
-    def test_search_basic(self, api, cache, sample_message):
-        """Test basic search."""
-        cache.store_message(sample_message)
-
-        result = api.search("test")
-
-        assert isinstance(result, SearchResult)
-        assert result.query == "test"
-        assert result.count >= 0
-
-    def test_search_advanced(self, api, cache, sample_message):
-        """Test advanced search with operators."""
-        cache.store_message(sample_message)
-
-        result = api.search_advanced("from:sender")
-
-        assert isinstance(result, SearchResult)
-        assert "from:sender" in result.query
-
-    def test_search_sql(self, api, cache, sample_message):
-        """Test raw SQL search."""
-        cache.store_message(sample_message)
-
-        messages = api.search_sql("SELECT * FROM messages LIMIT 10")
-
-        assert isinstance(messages, list)
-
-    def test_search_sql_rejects_non_select(self, api):
-        """Test that SQL search rejects non-SELECT queries."""
-        with pytest.raises(ValueError, match="Only SELECT"):
-            api.search_sql("DELETE FROM messages")
-
-    def test_search_sql_rejects_dangerous(self, api):
-        """Test that SQL search rejects dangerous keywords."""
-        with pytest.raises(ValueError, match="disallowed keyword"):
-            api.search_sql("SELECT * FROM messages; DROP TABLE messages")
 
 
 class TestDrafts:
@@ -251,6 +198,46 @@ class TestDrafts:
         assert result is False
 
 
+class TestCreateReply:
+    def test_create_reply_success(self, api, cache, sample_message):
+        cache.store_message(sample_message)
+
+        with patch.object(api.drafts, "create_reply") as mock_create:
+            mock_create.return_value = MagicMock(draft_id="d1")
+            draft = api.create_reply(
+                message_id=sample_message.message_id,
+                body="Thanks!",
+            )
+            mock_create.assert_called_once_with(
+                account=sample_message.account,
+                conv_id=sample_message.conv_id,
+                body_text="Thanks!",
+                reply_all=False,
+            )
+            assert draft.draft_id == "d1"
+
+    def test_create_reply_message_not_found(self, api, cache):
+        with pytest.raises(ValueError, match="not found"):
+            api.create_reply(message_id="<nonexistent>", body="Hello")
+
+    def test_create_reply_passes_reply_all(self, api, cache, sample_message):
+        cache.store_message(sample_message)
+
+        with patch.object(api.drafts, "create_reply") as mock_create:
+            mock_create.return_value = MagicMock(draft_id="d1")
+            api.create_reply(
+                message_id=sample_message.message_id,
+                body="Thanks!",
+                reply_all=True,
+            )
+            mock_create.assert_called_once_with(
+                account=sample_message.account,
+                conv_id=sample_message.conv_id,
+                body_text="Thanks!",
+                reply_all=True,
+            )
+
+
 class TestMessageActions:
     """Tests for message actions."""
 
@@ -282,37 +269,6 @@ class TestMessageActions:
         mock_client.archive_message.assert_called_once()
 
 
-class TestAttachments:
-    """Tests for attachment operations."""
-
-    def test_list_attachments(self, api, cache):
-        """Test listing attachments."""
-        msg = Message(
-            message_id="<msg_with_att@example.com>",
-            conv_id="conv1",
-            account="test",
-            folder="INBOX",
-            **{"from": Address(addr="sender@example.com")},
-            date=datetime.now(UTC),
-            subject="With Attachment",
-            headers_fetched_at=datetime.now(UTC),
-            attachments=[
-                {"filename": "doc.pdf", "size": 1024, "content_type": "application/pdf"},
-            ],
-        )
-        cache.store_message(msg)
-
-        attachments = api.list_attachments("<msg_with_att@example.com>")
-
-        assert len(attachments) == 1
-        assert attachments[0]["filename"] == "doc.pdf"
-
-    def test_list_attachments_message_not_found(self, api, cache):
-        """Test listing attachments for non-existent message."""
-        attachments = api.list_attachments("<nonexistent@example.com>")
-        assert attachments == []
-
-
 class TestCacheOperations:
     """Tests for cache operations."""
 
@@ -333,106 +289,6 @@ class TestCacheOperations:
 
         stats = api.get_cache_stats()
         assert stats.message_count == 0
-
-
-class TestResolveConversationId:
-    """Tests for resolve_conversation_id method."""
-
-    def test_resolve_unique_prefix(self, api, cache):
-        """Test resolving a unique prefix returns the conversation."""
-        msg = Message(
-            message_id="<msg1@example.com>",
-            conv_id="abc123def456",
-            account="test",
-            folder="INBOX",
-            **{"from": Address(addr="alice@example.com")},
-            date=datetime.now(UTC),
-            subject="Test Subject",
-            body_text="Body text",
-            headers_fetched_at=datetime.now(UTC),
-            body_fetched_at=datetime.now(UTC),
-        )
-        cache.store_message(msg)
-
-        result = api.resolve_conversation_id("abc")
-
-        assert result.conversation is not None
-        assert result.conversation.conv_id == "abc123def456"
-        assert result.matches is None
-        assert result.error is None
-
-    def test_resolve_ambiguous_prefix(self, api, cache):
-        """Test resolving an ambiguous prefix returns matches."""
-        msg1 = Message(
-            message_id="<msg1@example.com>",
-            conv_id="abc123xxx",
-            account="test",
-            folder="INBOX",
-            **{"from": Address(addr="alice@example.com")},
-            date=datetime(2025, 1, 1, 10, 0, 0, tzinfo=UTC),
-            subject="First Subject",
-            headers_fetched_at=datetime.now(UTC),
-        )
-        msg2 = Message(
-            message_id="<msg2@example.com>",
-            conv_id="abc456yyy",
-            account="test",
-            folder="INBOX",
-            **{"from": Address(addr="bob@example.com")},
-            date=datetime(2025, 1, 2, 10, 0, 0, tzinfo=UTC),
-            subject="Second Subject",
-            headers_fetched_at=datetime.now(UTC),
-        )
-        cache.store_message(msg1)
-        cache.store_message(msg2)
-
-        result = api.resolve_conversation_id("abc")
-
-        assert result.conversation is None
-        assert result.matches is not None
-        assert len(result.matches) == 2
-        assert result.error is None
-
-    def test_resolve_no_match(self, api, cache):
-        """Test resolving a prefix with no matches returns error."""
-        msg = Message(
-            message_id="<msg1@example.com>",
-            conv_id="abc123",
-            account="test",
-            folder="INBOX",
-            **{"from": Address(addr="alice@example.com")},
-            date=datetime.now(UTC),
-            headers_fetched_at=datetime.now(UTC),
-        )
-        cache.store_message(msg)
-
-        result = api.resolve_conversation_id("xyz")
-
-        assert result.conversation is None
-        assert result.matches is None
-        assert result.error is not None
-        assert "xyz" in result.error
-
-    def test_resolve_exact_match(self, api, cache):
-        """Test resolving exact conv_id works."""
-        msg = Message(
-            message_id="<msg1@example.com>",
-            conv_id="exact_conv_id",
-            account="test",
-            folder="INBOX",
-            **{"from": Address(addr="alice@example.com")},
-            date=datetime.now(UTC),
-            subject="Test",
-            body_text="Body",
-            headers_fetched_at=datetime.now(UTC),
-            body_fetched_at=datetime.now(UTC),
-        )
-        cache.store_message(msg)
-
-        result = api.resolve_conversation_id("exact_conv_id")
-
-        assert result.conversation is not None
-        assert result.conversation.conv_id == "exact_conv_id"
 
 
 class TestGetApi:

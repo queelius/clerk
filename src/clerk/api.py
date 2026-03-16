@@ -4,9 +4,7 @@ This module provides a unified API that both the CLI and MCP server use.
 All email operations go through this layer to ensure consistent behavior.
 """
 
-from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 from .cache import Cache, get_cache
@@ -17,7 +15,6 @@ from .models import (
     Address,
     CacheStats,
     Conversation,
-    ConversationSummary,
     Draft,
     FolderInfo,
     Message,
@@ -25,68 +22,15 @@ from .models import (
     SendResult,
     UnreadCounts,
 )
-from .search import SearchQuery
 from .smtp_client import check_send_allowed, send_draft
-
-
-@dataclass
-class InboxResult:
-    """Result from list_inbox operation."""
-
-    account: str
-    conversations: list[ConversationSummary]
-    count: int
-    from_cache: bool = False
-
-
-@dataclass
-class SearchResult:
-    """Result from search operation."""
-
-    query: str
-    messages: list[Message]
-    count: int
-
-
-@dataclass
-class SendPreview:
-    """Preview before sending a draft."""
-
-    draft_id: str
-    preview: str
-    confirmation_token: str
-    expires_in_seconds: int
-
-
-@dataclass
-class ConversationLookupResult:
-    """Result of conversation ID lookup.
-
-    One of these will be set:
-    - conversation: If a unique match was found
-    - matches: If multiple conversations match (ambiguous prefix)
-    - error: If no matches were found
-    """
-
-    conversation: Conversation | None = None
-    matches: list[ConversationSummary] | None = None
-    error: str | None = None
 
 
 class ClerkAPI:
     """Unified API for clerk email operations.
 
     This class centralizes all business logic and can be used by:
-    - CLI commands
     - MCP server tools
-    - Interactive shell
     - Programmatic usage
-
-    Example:
-        api = ClerkAPI()
-        result = api.list_inbox("personal", limit=20)
-        for conv in result.conversations:
-            print(conv.subject)
     """
 
     def __init__(
@@ -131,78 +75,6 @@ class ClerkAPI:
     # =========================================================================
     # Inbox & Message Operations
     # =========================================================================
-
-    def list_inbox(
-        self,
-        account: str | None = None,
-        folder: str = "INBOX",
-        limit: int = 20,
-        unread_only: bool = False,
-        fresh: bool = False,
-    ) -> InboxResult:
-        """List recent conversations in inbox.
-
-        Args:
-            account: Account name (uses default if not provided)
-            folder: Folder to list (default: INBOX)
-            limit: Maximum conversations to return
-            unread_only: Only show unread conversations
-            fresh: Bypass cache, fetch from server
-
-        Returns:
-            InboxResult with list of conversation summaries
-        """
-        account_name, _account_config = self.config.get_account(account)
-
-        # Check cache freshness
-        if not fresh and self.cache.is_inbox_fresh(
-            account_name, self.config.cache.inbox_freshness_min
-        ):
-            # Serve from cache
-            conversations = self.cache.list_conversations(
-                account=account_name,
-                folder=folder,
-                unread_only=unread_only,
-                limit=limit,
-            )
-            return InboxResult(
-                account=account_name,
-                conversations=conversations,
-                count=len(conversations),
-                from_cache=True,
-            )
-
-        # Fetch from server
-        with get_imap_client(account_name) as client:
-            messages = client.fetch_messages(
-                folder=folder,
-                limit=limit * 3,  # Fetch more to account for threading
-                unread_only=unread_only,
-                fetch_bodies=False,
-            )
-
-            for msg in messages:
-                self.cache.store_message(msg)
-
-            self.cache.mark_inbox_synced(account_name)
-
-        # Prune old messages
-        self.cache.prune_old_messages(self.config.cache.window_days)
-
-        # Get conversations from cache
-        conversations = self.cache.list_conversations(
-            account=account_name,
-            folder=folder,
-            unread_only=unread_only,
-            limit=limit,
-        )
-
-        return InboxResult(
-            account=account_name,
-            conversations=conversations,
-            count=len(conversations),
-            from_cache=False,
-        )
 
     def get_conversation(
         self, conv_id: str, fresh: bool = False
@@ -261,112 +133,6 @@ class ClerkAPI:
 
         return msg
 
-    def resolve_conversation_id(
-        self, conv_id: str, fresh: bool = False
-    ) -> ConversationLookupResult:
-        """Resolve a conversation ID or prefix.
-
-        Use this method when you need to handle ambiguous prefixes gracefully.
-        It supports any prefix length and provides disambiguation when multiple
-        conversations match.
-
-        Args:
-            conv_id: Conversation ID or prefix
-            fresh: Bypass cache for body fetching
-
-        Returns:
-            ConversationLookupResult with one of:
-            - conversation: If unique match found (bodies will be fetched)
-            - matches: If ambiguous (multiple matches) - summaries for disambiguation
-            - error: If no matches found
-        """
-        # Try to get conversation (handles unique prefix internally)
-        conv = self.get_conversation(conv_id, fresh=fresh)
-        if conv:
-            return ConversationLookupResult(conversation=conv)
-
-        # Check for ambiguous matches
-        matches = self.cache.find_conversations_by_prefix(conv_id)
-        if matches:
-            return ConversationLookupResult(matches=matches)
-
-        return ConversationLookupResult(error=f"No conversation matching '{conv_id}'")
-
-    # =========================================================================
-    # Search Operations
-    # =========================================================================
-
-    def search(
-        self,
-        query: str,
-        account: str | None = None,
-        limit: int = 20,
-    ) -> SearchResult:
-        """Search messages using basic FTS.
-
-        Args:
-            query: Search query string
-            account: Filter by account (optional)
-            limit: Maximum results
-
-        Returns:
-            SearchResult with matching messages
-        """
-        messages = self.cache.search(query, account=account, limit=limit)
-        return SearchResult(query=query, messages=messages, count=len(messages))
-
-    def search_advanced(
-        self,
-        query: str | SearchQuery,
-        account: str | None = None,
-        folder: str | None = None,
-        limit: int = 20,
-    ) -> SearchResult:
-        """Advanced search with operator support.
-
-        Supports operators like:
-        - from:alice, to:bob
-        - subject:meeting, body:quarterly
-        - has:attachment
-        - is:unread, is:read, is:flagged
-        - after:2025-01-01, before:2025-12-31
-
-        Args:
-            query: Search query string or pre-parsed SearchQuery
-            account: Filter by account (optional)
-            folder: Filter by folder (optional)
-            limit: Maximum results
-
-        Returns:
-            SearchResult with matching messages
-        """
-        original_query = query if isinstance(query, str) else query.original_query
-        messages = self.cache.search_advanced(
-            query, account=account, folder=folder, limit=limit
-        )
-        return SearchResult(query=original_query, messages=messages, count=len(messages))
-
-    def search_sql(
-        self,
-        sql: str,
-        params: tuple[Any, ...] | list[Any] | None = None,
-        limit: int = 100,
-    ) -> list[Message]:
-        """Execute a raw SQL query (power users).
-
-        Args:
-            sql: SQL SELECT query
-            params: Query parameters (optional)
-            limit: Maximum results (enforced)
-
-        Returns:
-            List of matching messages
-
-        Raises:
-            ValueError: If query is not a SELECT statement
-        """
-        return self.cache.execute_raw_query(sql, params, limit)
-
     # =========================================================================
     # Draft Operations
     # =========================================================================
@@ -418,6 +184,42 @@ class ClerkAPI:
                 subject=subject,
                 body_text=body,
             )
+
+    def create_reply(
+        self,
+        message_id: str,
+        body: str,
+        reply_all: bool = False,
+        account: str | None = None,
+    ) -> Draft:
+        """Create a reply draft to an existing message.
+
+        Args:
+            message_id: Message ID to reply to
+            body: Reply body text
+            reply_all: Include all original recipients
+            account: Account name (uses message's account if not provided)
+
+        Returns:
+            Created Draft
+
+        Raises:
+            ValueError: If original message not found
+        """
+        # Use cache lookup — we only need metadata (conv_id, account), not body
+        msg = self.cache.get_message(message_id)
+        if not msg:
+            raise ValueError(f"Message not found: {message_id}")
+
+        reply_account = account or msg.account
+        account_name, _ = self.config.get_account(reply_account)
+
+        return self.drafts.create_reply(
+            account=account_name,
+            conv_id=msg.conv_id,
+            body_text=body,
+            reply_all=reply_all,
+        )
 
     def get_draft(self, draft_id: str) -> Draft | None:
         """Get a draft by ID."""
@@ -577,78 +379,6 @@ class ClerkAPI:
             return client.get_unread_counts()
 
     # =========================================================================
-    # Attachment Operations
-    # =========================================================================
-
-    def list_attachments(self, message_id: str) -> list[dict[str, Any]]:
-        """List attachments for a message.
-
-        Returns:
-            List of attachment info dicts with filename, size, content_type
-        """
-        msg = self.cache.get_message(message_id)
-        if not msg:
-            return []
-
-        return [
-            {
-                "filename": att.filename,
-                "size": att.size,
-                "content_type": att.content_type,
-            }
-            for att in msg.attachments
-        ]
-
-    def download_attachment(
-        self,
-        message_id: str,
-        filename: str,
-        destination: Path | str,
-        account: str | None = None,
-    ) -> Path:
-        """Download an attachment from a message.
-
-        Args:
-            message_id: Message ID
-            filename: Attachment filename
-            destination: Directory or file path to save to
-            account: Account name (optional)
-
-        Returns:
-            Path to saved file
-
-        Raises:
-            FileNotFoundError: If message or attachment not found
-        """
-        msg = self.cache.get_message(message_id)
-        if not msg:
-            raise FileNotFoundError(f"Message not found: {message_id}")
-
-        # Find the attachment
-        attachment = next(
-            (a for a in msg.attachments if a.filename == filename), None
-        )
-        if not attachment:
-            raise FileNotFoundError(f"Attachment not found: {filename}")
-
-        # Determine account
-        account_name = msg.account
-
-        # Fetch attachment content from server
-        with get_imap_client(account_name) as client:
-            content = client.fetch_attachment(msg.folder, message_id, filename)
-
-        # Save to destination
-        dest_path = Path(destination)
-        if dest_path.is_dir():
-            dest_path = dest_path / filename
-
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
-        dest_path.write_bytes(content)
-
-        return dest_path
-
-    # =========================================================================
     # Sync Operations
     # =========================================================================
 
@@ -714,31 +444,6 @@ class ClerkAPI:
     def clear_cache(self) -> None:
         """Clear all cached data."""
         self.cache.clear()
-
-    def refresh_cache(
-        self, account: str | None = None, folder: str = "INBOX", limit: int = 200
-    ) -> int:
-        """Force refresh cache from server.
-
-        Returns:
-            Number of messages fetched
-        """
-        account_name, _ = self.config.get_account(account)
-
-        with get_imap_client(account_name) as client:
-            messages = client.fetch_messages(
-                folder=folder,
-                limit=limit,
-                fetch_bodies=True,
-            )
-
-            for msg in messages:
-                self.cache.store_message(msg)
-
-            self.cache.mark_inbox_synced(account_name)
-
-        self.cache.prune_old_messages(self.config.cache.window_days)
-        return len(messages)
 
     def get_status(self) -> dict[str, Any]:
         """Get overall status information."""
