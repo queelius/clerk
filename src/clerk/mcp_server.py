@@ -13,8 +13,8 @@ from .cache import SCHEMA
 from .config import ensure_dirs, get_config
 from .smtp_client import check_send_allowed, format_draft_preview, send_draft_async
 
-# Store pending M365 device code flows (account_name → flow dict)
-_pending_device_flows: dict[str, tuple[Any, Any]] = {}  # account → (app, flow)
+# Store pending M365 device code flows: account -> (app, flow, expires_at)
+_pending_device_flows: dict[str, tuple[Any, Any, float]] = {}
 
 mcp = FastMCP(name="clerk")
 
@@ -396,7 +396,7 @@ def clerk_status() -> dict[str, Any]:
 
 
 @mcp.tool()
-def clerk_auth(
+async def clerk_auth(
     account: str,
     confirm: bool = False,
     password: str | None = None,
@@ -404,15 +404,16 @@ def clerk_auth(
     """Re-authenticate an account when credentials expire.
 
     Microsoft 365 (two-step device code flow):
-      Step 1: Call without confirm — returns URL and user code.
+      Step 1: Call without confirm. Returns URL and user code.
               Show these to the user so they can authenticate in a browser.
-      Step 2: Call with confirm=True — polls until auth completes.
+      Step 2: Call with confirm=True. Polls until auth completes.
 
     Gmail: Attempts silent token refresh. If that fails, returns
     instructions for the user to run 'clerk accounts auth' in terminal
     (Gmail OAuth requires a browser callback).
 
     IMAP: Pass the new password to update credentials and test connection.
+    Note: the password will be visible in conversation history.
 
     Args:
         account: Account name to re-authenticate
@@ -432,16 +433,24 @@ def clerk_auth(
     protocol = acct_config.protocol
 
     if protocol == "microsoft365":
-        return _auth_m365(account, confirm)
+        return await _auth_m365(account, confirm)
     elif protocol == "gmail":
         return _auth_gmail(account, acct_config)
     else:
         return _auth_imap(account, acct_config, password)
 
 
-def _auth_m365(account: str, confirm: bool) -> dict[str, Any]:
+async def _auth_m365(account: str, confirm: bool) -> dict[str, Any]:
     """Handle M365 device code auth flow."""
+    import asyncio
+
     from .microsoft365 import M365_SCOPES, _build_app, save_m365_token_cache
+
+    # Clean up expired flows
+    now = time.time()
+    expired = [k for k, (_, _, exp) in _pending_device_flows.items() if now > exp]
+    for k in expired:
+        del _pending_device_flows[k]
 
     if not confirm:
         # Step 1: Initiate device code flow
@@ -451,8 +460,9 @@ def _auth_m365(account: str, confirm: bool) -> dict[str, Any]:
         if "error" in flow:
             return {"error": f"Failed to initiate auth: {flow.get('error_description', flow['error'])}"}
 
-        # Store for step 2
-        _pending_device_flows[account] = (app, flow)
+        # Store for step 2 (device codes expire in ~15 min)
+        expires_at = now + flow.get("expires_in", 900)
+        _pending_device_flows[account] = (app, flow, expires_at)
 
         return {
             "status": "awaiting_user",
@@ -467,9 +477,10 @@ def _auth_m365(account: str, confirm: bool) -> dict[str, Any]:
     if account not in _pending_device_flows:
         return {"error": "No pending auth flow. Call clerk_auth without confirm=True first."}
 
-    app, flow = _pending_device_flows.pop(account)
+    app, flow, _ = _pending_device_flows.pop(account)
 
-    result = app.acquire_token_by_device_flow(flow)
+    # Run the blocking MSAL poll in a thread to avoid freezing the event loop
+    result = await asyncio.to_thread(app.acquire_token_by_device_flow, flow)
 
     if "error" in result:
         return {

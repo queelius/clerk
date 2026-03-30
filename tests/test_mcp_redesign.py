@@ -481,22 +481,24 @@ class TestClerkStatusRedesign:
 
 
 class TestClerkAuth:
+    @pytest.mark.asyncio
     @patch("clerk.mcp_server.get_config")
     @patch("clerk.mcp_server.ensure_dirs")
-    def test_auth_unknown_account(self, mock_dirs, mock_get_config):
+    async def test_auth_unknown_account(self, mock_dirs, mock_get_config):
         from clerk.mcp_server import clerk_auth
 
         mock_config = MagicMock()
         mock_config.accounts = {"siue": MagicMock()}
         mock_get_config.return_value = mock_config
 
-        result = clerk_auth(account="nonexistent")
+        result = await clerk_auth(account="nonexistent")
         assert "error" in result
         assert "not found" in result["error"].lower()
 
+    @pytest.mark.asyncio
     @patch("clerk.mcp_server.get_config")
     @patch("clerk.mcp_server.ensure_dirs")
-    def test_auth_m365_step1_returns_device_code(self, mock_dirs, mock_get_config):
+    async def test_auth_m365_step1_returns_device_code(self, mock_dirs, mock_get_config):
         from clerk.mcp_server import clerk_auth
 
         mock_acct = MagicMock()
@@ -513,13 +515,14 @@ class TestClerkAuth:
                 "user_code": "ABCD1234",
                 "message": "Go to URL and enter code",
             }
-            result = clerk_auth(account="siue")
+            result = await clerk_auth(account="siue")
             assert result["status"] == "awaiting_user"
             assert "user_code" in result
 
+    @pytest.mark.asyncio
     @patch("clerk.mcp_server.get_config")
     @patch("clerk.mcp_server.ensure_dirs")
-    def test_auth_gmail_silent_refresh(self, mock_dirs, mock_get_config):
+    async def test_auth_gmail_silent_refresh(self, mock_dirs, mock_get_config):
         from clerk.mcp_server import clerk_auth
 
         mock_acct = MagicMock()
@@ -534,12 +537,13 @@ class TestClerkAuth:
                 "protocol": "gmail",
                 "message": "Token refreshed successfully.",
             }
-            result = clerk_auth(account="gmail")
+            result = await clerk_auth(account="gmail")
             assert result["status"] == "success"
 
+    @pytest.mark.asyncio
     @patch("clerk.mcp_server.get_config")
     @patch("clerk.mcp_server.ensure_dirs")
-    def test_auth_imap_no_password_asks_for_one(self, mock_dirs, mock_get_config):
+    async def test_auth_imap_no_password_asks_for_one(self, mock_dirs, mock_get_config):
         from clerk.mcp_server import clerk_auth
 
         mock_acct = MagicMock()
@@ -548,12 +552,13 @@ class TestClerkAuth:
         mock_config.accounts = {"work": mock_acct}
         mock_get_config.return_value = mock_config
 
-        result = clerk_auth(account="work")
+        result = await clerk_auth(account="work")
         assert result["status"] == "needs_password"
 
+    @pytest.mark.asyncio
     @patch("clerk.mcp_server.get_config")
     @patch("clerk.mcp_server.ensure_dirs")
-    def test_auth_imap_with_password_saves_and_tests(self, mock_dirs, mock_get_config):
+    async def test_auth_imap_with_password_saves_and_tests(self, mock_dirs, mock_get_config):
         from clerk.mcp_server import clerk_auth
 
         mock_acct = MagicMock()
@@ -568,52 +573,54 @@ class TestClerkAuth:
                 "protocol": "imap",
                 "message": "Password updated and connection verified (5 folders).",
             }
-            result = clerk_auth(account="work", password="newpass123")
+            result = await clerk_auth(account="work", password="newpass123")
             assert result["status"] == "success"
 
 
 class TestAuthM365Flow:
-    def test_m365_step1_initiates_flow(self):
+    @pytest.mark.asyncio
+    async def test_m365_step1_initiates_flow(self):
         from clerk.mcp_server import _auth_m365
 
-        with patch("clerk.mcp_server._pending_device_flows", {}):
-            with patch("clerk.microsoft365._build_app") as mock_build:
+        with patch("clerk.mcp_server._pending_device_flows", {}), patch("clerk.microsoft365._build_app") as mock_build:
                 mock_app = MagicMock()
                 mock_app.initiate_device_flow.return_value = {
                     "verification_uri": "https://microsoft.com/devicelogin",
                     "user_code": "ABCD1234",
                     "message": "Go to https://microsoft.com/devicelogin and enter code ABCD1234",
+                    "expires_in": 900,
                 }
                 mock_build.return_value = mock_app
 
-                result = _auth_m365("siue", confirm=False)
+                result = await _auth_m365("siue", confirm=False)
                 assert result["status"] == "awaiting_user"
                 assert result["user_code"] == "ABCD1234"
                 assert result["url"] == "https://microsoft.com/devicelogin"
 
-    def test_m365_step2_without_step1_errors(self):
+    @pytest.mark.asyncio
+    async def test_m365_step2_without_step1_errors(self):
         from clerk.mcp_server import _auth_m365, _pending_device_flows
 
-        # Clear any leftover flows
         _pending_device_flows.clear()
 
-        result = _auth_m365("siue", confirm=True)
+        result = await _auth_m365("siue", confirm=True)
         assert "error" in result
         assert "No pending auth flow" in result["error"]
 
-    def test_m365_step2_completes_successfully(self):
+    @pytest.mark.asyncio
+    async def test_m365_step2_completes_successfully(self):
         from clerk.mcp_server import _auth_m365, _pending_device_flows
 
         mock_app = MagicMock()
         mock_app.acquire_token_by_device_flow.return_value = {"access_token": "tok"}
         mock_app.token_cache.serialize.return_value = "{}"
-        _pending_device_flows["siue"] = (mock_app, {"device_code": "xyz"})
+        _pending_device_flows["siue"] = (mock_app, {"device_code": "xyz"}, time.time() + 900)
 
         with patch("clerk.microsoft365.save_m365_token_cache"):
-            result = _auth_m365("siue", confirm=True)
+            result = await _auth_m365("siue", confirm=True)
 
         assert result["status"] == "success"
-        assert "siue" not in _pending_device_flows  # cleaned up
+        assert "siue" not in _pending_device_flows
 
 
 # --- Resources ---

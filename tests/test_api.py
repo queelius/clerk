@@ -73,15 +73,15 @@ class TestHtmlToText:
 
     def test_preserves_line_breaks(self):
         result = html_to_text("Line 1<br>Line 2<br/>Line 3")
-        assert "Line 1\nLine 2\nLine 3" == result
+        assert result == "Line 1\nLine 2\nLine 3"
 
     def test_decodes_entities(self):
         result = html_to_text("A &amp; B &lt; C &gt; D")
-        assert "A & B < C > D" == result
+        assert result == "A & B < C > D"
 
     def test_strips_style_blocks(self):
         result = html_to_text("<style>body{color:red}</style>Hello")
-        assert "Hello" == result
+        assert result == "Hello"
 
     def test_real_outlook_fragment(self):
         html = (

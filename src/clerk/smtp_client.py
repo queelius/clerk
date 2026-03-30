@@ -112,9 +112,6 @@ class SmtpClient:
         msg = self._create_message(draft)
         message_id = msg["Message-ID"]
 
-        # Get all recipients
-        [a.addr for a in draft.to + draft.cc + draft.bcc]
-
         try:
             if self.config.protocol == "gmail":
                 await self._send_gmail(msg)
@@ -202,8 +199,16 @@ class SmtpClient:
         await smtp.send_message(msg)
         await smtp.quit()
 
+    async def send_async(self, draft: Draft) -> SendResult:
+        """Send a draft message (async)."""
+        return await self._send_async(draft)
+
     def send(self, draft: Draft) -> SendResult:
-        """Send a draft message (synchronous wrapper)."""
+        """Send a draft message (synchronous wrapper).
+
+        Only works when no event loop is running.
+        Use send_async() from within an async context.
+        """
         return asyncio.run(self._send_async(draft))
 
 
@@ -225,15 +230,57 @@ def check_send_allowed(draft: Draft, account_name: str) -> tuple[bool, str | Non
         if addr.addr.lower() in blocked:
             return False, f"Recipient {addr.addr} is blocked"
 
-    # Check FROM matches account
-    _, account_config = config.get_account(account_name)
-    account_config.from_.address.lower()
-
-    # This check happens at send time, but draft.account should match
+    # Check account matches draft
     if draft.account != account_name:
         return False, f"Draft account '{draft.account}' doesn't match '{account_name}'"
 
     return True, None
+
+
+async def send_draft_async(
+    draft_id: str,
+    account_name: str | None = None,
+) -> SendResult:
+    """Send a draft by ID (async version for use within an event loop)."""
+    config = get_config()
+    cache = get_cache()
+    manager = get_draft_manager()
+
+    draft = manager.get(draft_id)
+    if not draft:
+        return SendResult(success=False, error=f"Draft not found: {draft_id}")
+
+    if account_name is None:
+        account_name = draft.account
+
+    try:
+        name, account_config = config.get_account(account_name)
+    except ValueError as e:
+        return SendResult(success=False, error=str(e))
+
+    allowed, error = check_send_allowed(draft, name)
+    if not allowed:
+        return SendResult(success=False, error=error)
+
+    client = SmtpClient(name, account_config)
+    result = await client.send_async(draft)
+
+    if result.success:
+        limiter = get_rate_limiter(name)
+        limiter.record_send()
+
+        cache.log_send(
+            account=name,
+            to=draft.to,
+            cc=draft.cc,
+            bcc=draft.bcc,
+            subject=draft.subject,
+            message_id=result.message_id,
+        )
+
+        manager.delete(draft_id)
+
+    return result
 
 
 def send_draft(
@@ -241,41 +288,27 @@ def send_draft(
     account_name: str | None = None,
     skip_confirmation: bool = False,
 ) -> SendResult:
-    """Send a draft by ID.
-
-    Args:
-        draft_id: The draft ID to send
-        account_name: Account to send from (uses draft's account if None)
-        skip_confirmation: Skip the confirmation prompt (dangerous!)
-
-    Returns:
-        SendResult with success status and message_id or error
-    """
+    """Send a draft by ID (sync version, fails inside a running event loop)."""
     config = get_config()
     cache = get_cache()
     manager = get_draft_manager()
 
-    # Get the draft
     draft = manager.get(draft_id)
     if not draft:
         return SendResult(success=False, error=f"Draft not found: {draft_id}")
 
-    # Determine account
     if account_name is None:
         account_name = draft.account
 
-    # Get account config
     try:
         name, account_config = config.get_account(account_name)
     except ValueError as e:
         return SendResult(success=False, error=str(e))
 
-    # Check if sending is allowed
     allowed, error = check_send_allowed(draft, name)
     if not allowed:
         return SendResult(success=False, error=error)
 
-    # Send the message
     client = SmtpClient(name, account_config)
     result = client.send(draft)
 
