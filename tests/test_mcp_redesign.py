@@ -539,7 +539,7 @@ class TestClerkAuth:
 
     @patch("clerk.mcp_server.get_config")
     @patch("clerk.mcp_server.ensure_dirs")
-    def test_auth_imap_returns_manual_required(self, mock_dirs, mock_get_config):
+    def test_auth_imap_no_password_asks_for_one(self, mock_dirs, mock_get_config):
         from clerk.mcp_server import clerk_auth
 
         mock_acct = MagicMock()
@@ -549,8 +549,27 @@ class TestClerkAuth:
         mock_get_config.return_value = mock_config
 
         result = clerk_auth(account="work")
-        assert result["status"] == "manual_required"
-        assert result["protocol"] == "imap"
+        assert result["status"] == "needs_password"
+
+    @patch("clerk.mcp_server.get_config")
+    @patch("clerk.mcp_server.ensure_dirs")
+    def test_auth_imap_with_password_saves_and_tests(self, mock_dirs, mock_get_config):
+        from clerk.mcp_server import clerk_auth
+
+        mock_acct = MagicMock()
+        mock_acct.protocol = "imap"
+        mock_config = MagicMock()
+        mock_config.accounts = {"work": mock_acct}
+        mock_get_config.return_value = mock_config
+
+        with patch("clerk.mcp_server._auth_imap") as mock_imap:
+            mock_imap.return_value = {
+                "status": "success",
+                "protocol": "imap",
+                "message": "Password updated and connection verified (5 folders).",
+            }
+            result = clerk_auth(account="work", password="newpass123")
+            assert result["status"] == "success"
 
 
 class TestAuthM365Flow:

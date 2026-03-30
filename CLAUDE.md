@@ -44,7 +44,7 @@ mypy src
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  Entry Points                                                │
-│  ├── mcp_server.py  (8 tools + 3 resources — primary)       │
+│  ├── mcp_server.py  (10 tools + 3 resources, primary)       │
 │  └── cli.py  (~550 lines — setup/auth/debug only)           │
 └─────────────────────────────────────────────────────────────┘
                               │
@@ -87,7 +87,7 @@ mypy src
 - **search.py** - Search query parser supporting operators like `from:`, `to:`, `has:attachment`, `is:unread`.
 - **threading.py** - Email threading using References/In-Reply-To headers.
 - **drafts.py** - Local draft storage in `~/.local/share/clerk/drafts/`.
-- **mcp_server.py** - Primary interface: FastMCP server with 8 tools + 3 resources. Two-step send confirmation is mandatory here.
+- **mcp_server.py** - Primary interface: FastMCP server with 10 tools + 3 resources. Two-step send confirmation is mandatory here.
 - **cli.py** - Setup, auth, and debug commands only (~550 lines).
 
 ### Conversation ID Prefix Matching

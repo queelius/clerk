@@ -399,10 +399,11 @@ def clerk_status() -> dict[str, Any]:
 def clerk_auth(
     account: str,
     confirm: bool = False,
+    password: str | None = None,
 ) -> dict[str, Any]:
     """Re-authenticate an account when credentials expire.
 
-    Two-step for Microsoft 365 (device code flow):
+    Microsoft 365 (two-step device code flow):
       Step 1: Call without confirm — returns URL and user code.
               Show these to the user so they can authenticate in a browser.
       Step 2: Call with confirm=True — polls until auth completes.
@@ -411,11 +412,12 @@ def clerk_auth(
     instructions for the user to run 'clerk accounts auth' in terminal
     (Gmail OAuth requires a browser callback).
 
-    IMAP: Returns instructions to update password via CLI.
+    IMAP: Pass the new password to update credentials and test connection.
 
     Args:
         account: Account name to re-authenticate
         confirm: Set True after user has completed browser auth (M365 only)
+        password: New password for IMAP accounts (ask the user for it)
 
     Returns:
         Auth instructions or success/failure status
@@ -434,15 +436,7 @@ def clerk_auth(
     elif protocol == "gmail":
         return _auth_gmail(account, acct_config)
     else:
-        return {
-            "status": "manual_required",
-            "protocol": "imap",
-            "message": (
-                f"IMAP account '{account}' uses password authentication. "
-                "Ask the user to run: clerk accounts add (to reconfigure) "
-                "or update the password in their system keyring."
-            ),
-        }
+        return _auth_imap(account, acct_config, password)
 
 
 def _auth_m365(account: str, confirm: bool) -> dict[str, Any]:
@@ -548,6 +542,44 @@ def _auth_gmail(account: str, acct_config: Any) -> dict[str, Any]:
             "Ask the user to run: clerk accounts auth " + account
         ),
     }
+
+
+def _auth_imap(account: str, acct_config: Any, password: str | None) -> dict[str, Any]:
+    """Handle IMAP password auth — update password and test connection."""
+    from .config import save_password
+    from .imap_client import ImapClient
+
+    if password is None:
+        return {
+            "status": "needs_password",
+            "protocol": "imap",
+            "message": (
+                f"IMAP account '{account}' needs a password. "
+                "Ask the user for their password, then call clerk_auth again with the password parameter."
+            ),
+        }
+
+    # Save the new password
+    save_password(account, password)
+
+    # Test the connection
+    try:
+        client = ImapClient(account, acct_config)
+        client.connect()
+        folder_count = len(client.list_folders())
+        client.disconnect()
+        return {
+            "status": "success",
+            "protocol": "imap",
+            "message": f"Password updated and connection verified ({folder_count} folders).",
+        }
+    except Exception as e:
+        return {
+            "status": "failed",
+            "protocol": "imap",
+            "error": f"Password saved but connection failed: {e}",
+            "message": "The password was saved to keyring but the connection test failed. Check the credentials.",
+        }
 
 
 # ============================================================================
