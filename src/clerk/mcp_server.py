@@ -1,4 +1,4 @@
-"""MCP Server for clerk — 9 tools + 3 resources for LLM email agents."""
+"""MCP Server for clerk — 10 tools + 3 resources for LLM email agents."""
 
 import json
 import secrets
@@ -11,7 +11,10 @@ from mcp.server.fastmcp import FastMCP
 from .api import get_api
 from .cache import SCHEMA
 from .config import ensure_dirs, get_config
-from .smtp_client import check_send_allowed, format_draft_preview
+from .smtp_client import check_send_allowed, format_draft_preview, send_draft_async
+
+# Store pending M365 device code flows (account_name → flow dict)
+_pending_device_flows: dict[str, tuple[Any, Any]] = {}  # account → (app, flow)
 
 mcp = FastMCP(name="clerk")
 
@@ -47,7 +50,7 @@ def _cleanup_expired_tokens() -> None:
 
 
 # ============================================================================
-# Tools (9)
+# Tools (10)
 # ============================================================================
 
 
@@ -260,7 +263,7 @@ def clerk_draft(
 
 
 @mcp.tool()
-def clerk_send(
+async def clerk_send(
     draft_id: str,
     token: str | None = None,
 ) -> dict[str, Any]:
@@ -306,7 +309,7 @@ def clerk_send(
     if not valid:
         return {"error": error}
 
-    result = api.send_draft(draft_id, skip_confirmation=True)
+    result = await send_draft_async(draft_id)
 
     if result.success:
         return {
@@ -390,6 +393,161 @@ def clerk_status() -> dict[str, Any]:
     ensure_dirs()
     api = get_api()
     return api.get_status()
+
+
+@mcp.tool()
+def clerk_auth(
+    account: str,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Re-authenticate an account when credentials expire.
+
+    Two-step for Microsoft 365 (device code flow):
+      Step 1: Call without confirm — returns URL and user code.
+              Show these to the user so they can authenticate in a browser.
+      Step 2: Call with confirm=True — polls until auth completes.
+
+    Gmail: Attempts silent token refresh. If that fails, returns
+    instructions for the user to run 'clerk accounts auth' in terminal
+    (Gmail OAuth requires a browser callback).
+
+    IMAP: Returns instructions to update password via CLI.
+
+    Args:
+        account: Account name to re-authenticate
+        confirm: Set True after user has completed browser auth (M365 only)
+
+    Returns:
+        Auth instructions or success/failure status
+    """
+    ensure_dirs()
+    config = get_config()
+
+    if account not in config.accounts:
+        return {"error": f"Account '{account}' not found. Available: {list(config.accounts)}"}
+
+    acct_config = config.accounts[account]
+    protocol = acct_config.protocol
+
+    if protocol == "microsoft365":
+        return _auth_m365(account, confirm)
+    elif protocol == "gmail":
+        return _auth_gmail(account, acct_config)
+    else:
+        return {
+            "status": "manual_required",
+            "protocol": "imap",
+            "message": (
+                f"IMAP account '{account}' uses password authentication. "
+                "Ask the user to run: clerk accounts add (to reconfigure) "
+                "or update the password in their system keyring."
+            ),
+        }
+
+
+def _auth_m365(account: str, confirm: bool) -> dict[str, Any]:
+    """Handle M365 device code auth flow."""
+    from .microsoft365 import M365_SCOPES, _build_app, save_m365_token_cache
+
+    if not confirm:
+        # Step 1: Initiate device code flow
+        app = _build_app(account)
+        flow = app.initiate_device_flow(scopes=M365_SCOPES)
+
+        if "error" in flow:
+            return {"error": f"Failed to initiate auth: {flow.get('error_description', flow['error'])}"}
+
+        # Store for step 2
+        _pending_device_flows[account] = (app, flow)
+
+        return {
+            "status": "awaiting_user",
+            "protocol": "microsoft365",
+            "url": flow.get("verification_uri", "https://microsoft.com/devicelogin"),
+            "user_code": flow.get("user_code", ""),
+            "message": flow.get("message", ""),
+            "instruction": "Show the URL and code to the user. Once they authenticate, call clerk_auth again with confirm=True.",
+        }
+
+    # Step 2: Complete the flow (polls until user finishes)
+    if account not in _pending_device_flows:
+        return {"error": "No pending auth flow. Call clerk_auth without confirm=True first."}
+
+    app, flow = _pending_device_flows.pop(account)
+
+    result = app.acquire_token_by_device_flow(flow)
+
+    if "error" in result:
+        return {
+            "status": "failed",
+            "error": f"Authentication failed: {result.get('error_description', result['error'])}",
+        }
+
+    save_m365_token_cache(account, app.token_cache.serialize())
+
+    return {
+        "status": "success",
+        "protocol": "microsoft365",
+        "message": f"Account '{account}' re-authenticated successfully.",
+    }
+
+
+def _auth_gmail(account: str, acct_config: Any) -> dict[str, Any]:
+    """Handle Gmail auth — try silent refresh first."""
+    try:
+        from google.auth.transport.requests import Request
+
+        from .oauth import _load_credentials, _save_credentials, get_oauth_token
+    except ImportError:
+        return {"error": "Google auth libraries not installed. Run: pip install google-auth google-auth-oauthlib"}
+
+    token_json = get_oauth_token(account)
+    if not token_json:
+        return {
+            "status": "manual_required",
+            "protocol": "gmail",
+            "message": (
+                f"No stored credentials for Gmail account '{account}'. "
+                "Ask the user to run: clerk accounts auth " + account
+            ),
+        }
+
+    credentials = _load_credentials(token_json)
+
+    if credentials.valid:
+        return {
+            "status": "success",
+            "protocol": "gmail",
+            "message": f"Gmail account '{account}' credentials are still valid.",
+        }
+
+    if credentials.expired and credentials.refresh_token:
+        try:
+            credentials.refresh(Request())
+            _save_credentials(account, credentials)
+            return {
+                "status": "success",
+                "protocol": "gmail",
+                "message": f"Gmail account '{account}' token refreshed successfully.",
+            }
+        except Exception as e:
+            return {
+                "status": "manual_required",
+                "protocol": "gmail",
+                "message": (
+                    f"Token refresh failed: {e}. "
+                    "Ask the user to run: clerk accounts auth " + account
+                ),
+            }
+
+    return {
+        "status": "manual_required",
+        "protocol": "gmail",
+        "message": (
+            f"Gmail account '{account}' has no refresh token. "
+            "Ask the user to run: clerk accounts auth " + account
+        ),
+    }
 
 
 # ============================================================================

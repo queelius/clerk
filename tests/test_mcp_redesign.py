@@ -1,4 +1,4 @@
-"""Tests for the redesigned MCP server (9 tools + 3 resources)."""
+"""Tests for the redesigned MCP server (10 tools + 3 resources)."""
 
 import json
 import time
@@ -381,7 +381,8 @@ class TestClerkDraftListParams:
 class TestClerkSend:
     @patch("clerk.mcp_server.get_api")
     @patch("clerk.mcp_server.ensure_dirs")
-    def test_send_step1_returns_token(self, _dirs, mock_get_api):
+    @pytest.mark.asyncio
+    async def test_send_step1_returns_token(self, _dirs, mock_get_api):
         from clerk.mcp_server import clerk_send
 
         mock_draft = MagicMock()
@@ -399,7 +400,7 @@ class TestClerkSend:
             patch("clerk.mcp_server.check_send_allowed", return_value=(True, None)),
             patch("clerk.mcp_server.format_draft_preview", return_value="Preview text"),
         ):
-            result = clerk_send(draft_id="draft_1")
+            result = await clerk_send(draft_id="draft_1")
 
         assert result["status"] == "pending_confirmation"
         assert "token" in result
@@ -474,6 +475,126 @@ class TestClerkStatusRedesign:
 
         result = clerk_status()
         assert "version" in result
+
+
+# --- clerk_auth ---
+
+
+class TestClerkAuth:
+    @patch("clerk.mcp_server.get_config")
+    @patch("clerk.mcp_server.ensure_dirs")
+    def test_auth_unknown_account(self, mock_dirs, mock_get_config):
+        from clerk.mcp_server import clerk_auth
+
+        mock_config = MagicMock()
+        mock_config.accounts = {"siue": MagicMock()}
+        mock_get_config.return_value = mock_config
+
+        result = clerk_auth(account="nonexistent")
+        assert "error" in result
+        assert "not found" in result["error"].lower()
+
+    @patch("clerk.mcp_server.get_config")
+    @patch("clerk.mcp_server.ensure_dirs")
+    def test_auth_m365_step1_returns_device_code(self, mock_dirs, mock_get_config):
+        from clerk.mcp_server import clerk_auth
+
+        mock_acct = MagicMock()
+        mock_acct.protocol = "microsoft365"
+        mock_config = MagicMock()
+        mock_config.accounts = {"siue": mock_acct}
+        mock_get_config.return_value = mock_config
+
+        with patch("clerk.mcp_server._auth_m365") as mock_m365:
+            mock_m365.return_value = {
+                "status": "awaiting_user",
+                "protocol": "microsoft365",
+                "url": "https://microsoft.com/devicelogin",
+                "user_code": "ABCD1234",
+                "message": "Go to URL and enter code",
+            }
+            result = clerk_auth(account="siue")
+            assert result["status"] == "awaiting_user"
+            assert "user_code" in result
+
+    @patch("clerk.mcp_server.get_config")
+    @patch("clerk.mcp_server.ensure_dirs")
+    def test_auth_gmail_silent_refresh(self, mock_dirs, mock_get_config):
+        from clerk.mcp_server import clerk_auth
+
+        mock_acct = MagicMock()
+        mock_acct.protocol = "gmail"
+        mock_config = MagicMock()
+        mock_config.accounts = {"gmail": mock_acct}
+        mock_get_config.return_value = mock_config
+
+        with patch("clerk.mcp_server._auth_gmail") as mock_gmail:
+            mock_gmail.return_value = {
+                "status": "success",
+                "protocol": "gmail",
+                "message": "Token refreshed successfully.",
+            }
+            result = clerk_auth(account="gmail")
+            assert result["status"] == "success"
+
+    @patch("clerk.mcp_server.get_config")
+    @patch("clerk.mcp_server.ensure_dirs")
+    def test_auth_imap_returns_manual_required(self, mock_dirs, mock_get_config):
+        from clerk.mcp_server import clerk_auth
+
+        mock_acct = MagicMock()
+        mock_acct.protocol = "imap"
+        mock_config = MagicMock()
+        mock_config.accounts = {"work": mock_acct}
+        mock_get_config.return_value = mock_config
+
+        result = clerk_auth(account="work")
+        assert result["status"] == "manual_required"
+        assert result["protocol"] == "imap"
+
+
+class TestAuthM365Flow:
+    def test_m365_step1_initiates_flow(self):
+        from clerk.mcp_server import _auth_m365
+
+        with patch("clerk.mcp_server._pending_device_flows", {}):
+            with patch("clerk.microsoft365._build_app") as mock_build:
+                mock_app = MagicMock()
+                mock_app.initiate_device_flow.return_value = {
+                    "verification_uri": "https://microsoft.com/devicelogin",
+                    "user_code": "ABCD1234",
+                    "message": "Go to https://microsoft.com/devicelogin and enter code ABCD1234",
+                }
+                mock_build.return_value = mock_app
+
+                result = _auth_m365("siue", confirm=False)
+                assert result["status"] == "awaiting_user"
+                assert result["user_code"] == "ABCD1234"
+                assert result["url"] == "https://microsoft.com/devicelogin"
+
+    def test_m365_step2_without_step1_errors(self):
+        from clerk.mcp_server import _auth_m365, _pending_device_flows
+
+        # Clear any leftover flows
+        _pending_device_flows.clear()
+
+        result = _auth_m365("siue", confirm=True)
+        assert "error" in result
+        assert "No pending auth flow" in result["error"]
+
+    def test_m365_step2_completes_successfully(self):
+        from clerk.mcp_server import _auth_m365, _pending_device_flows
+
+        mock_app = MagicMock()
+        mock_app.acquire_token_by_device_flow.return_value = {"access_token": "tok"}
+        mock_app.token_cache.serialize.return_value = "{}"
+        _pending_device_flows["siue"] = (mock_app, {"device_code": "xyz"})
+
+        with patch("clerk.microsoft365.save_m365_token_cache"):
+            result = _auth_m365("siue", confirm=True)
+
+        assert result["status"] == "success"
+        assert "siue" not in _pending_device_flows  # cleaned up
 
 
 # --- Resources ---
