@@ -167,8 +167,12 @@ class SmtpClient:
         smtp = aiosmtplib.SMTP(hostname="smtp.gmail.com", port=587, start_tls=True)
         await smtp.connect()
 
-        # Authenticate with XOAUTH2
-        await smtp.auth_plain(email, oauth2_string)
+        # Authenticate with XOAUTH2 via raw SMTP command
+        response = await smtp.execute_command(
+            b"AUTH", b"XOAUTH2", oauth2_string.encode()
+        )
+        if response.code != 235:
+            raise aiosmtplib.SMTPAuthenticationError(response.code, response.message)
 
         # Send the message
         await smtp.send_message(msg)
