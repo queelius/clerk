@@ -166,7 +166,6 @@ class SmtpClient:
         # Connect to Gmail SMTP with XOAUTH2
         smtp = aiosmtplib.SMTP(hostname="smtp.gmail.com", port=587, start_tls=True)
         await smtp.connect()
-        await smtp.starttls()
 
         # Authenticate with XOAUTH2
         await smtp.auth_plain(email, oauth2_string)
@@ -186,8 +185,6 @@ class SmtpClient:
 
         smtp = aiosmtplib.SMTP(hostname="smtp.office365.com", port=587, start_tls=True)
         await smtp.connect()
-        await smtp.ehlo()
-        await smtp.starttls()
 
         # XOAUTH2 auth via raw SMTP command
         response = await smtp.execute_command(

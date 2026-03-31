@@ -51,8 +51,6 @@ class TestSmtpM365:
             hostname="smtp.office365.com", port=587, start_tls=True
         )
         mock_smtp.connect.assert_called_once()
-        mock_smtp.ehlo.assert_called_once()
-        mock_smtp.starttls.assert_called_once()
         mock_smtp.execute_command.assert_called_once()
         # Verify the AUTH command uses XOAUTH2
         args = mock_smtp.execute_command.call_args[0]
