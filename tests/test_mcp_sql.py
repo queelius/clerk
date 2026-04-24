@@ -47,7 +47,14 @@ class TestExecuteReadonlySql:
             )
 
     def test_rejects_dangerous_keywords(self, populated_cache):
-        with pytest.raises(ValueError, match="disallowed"):
+        # The read-only SQLite connection + single-statement execute()
+        # blocks writes regardless of the text of the query. Multi-statement
+        # attempts hit a SQL syntax error at the SQLite layer; writes against
+        # the read-only DB raise an operational error. Either is fine — the
+        # contract is "no mutation succeeds."
+        import sqlite3
+
+        with pytest.raises((ValueError, sqlite3.Error)):
             populated_cache.execute_readonly_sql(
                 "SELECT * FROM messages; DROP TABLE messages"
             )
@@ -121,6 +128,35 @@ class TestExecuteReadonlySql:
         assert "from_addr" in row
         assert "subject" in row
         assert "date_utc" in row
+
+    def test_accepts_with_cte(self, populated_cache):
+        """CTE (WITH) queries should be accepted — they're read-only."""
+        rows = populated_cache.execute_readonly_sql(
+            "WITH recent AS (SELECT * FROM messages) SELECT subject FROM recent"
+        )
+        assert len(rows) == 1
+        assert rows[0]["subject"] == "Test Subject"
+
+    def test_outer_limit_caps_inner_limit(self, populated_cache):
+        """Even if the user's SQL has LIMIT, the caller's limit wins."""
+        # Insert a second message so we can observe the cap working.
+        msg2 = Message(
+            message_id="<test2@example.com>",
+            conv_id="deadbeef1234",
+            account="test",
+            folder="INBOX",
+            **{"from": Address(addr="bob@example.com", name="Bob")},
+            to=[],
+            subject="Second",
+            date=datetime.now(UTC),
+            flags=[],
+        )
+        populated_cache.store_message(msg2)
+
+        rows = populated_cache.execute_readonly_sql(
+            "SELECT * FROM messages LIMIT 100", limit=1
+        )
+        assert len(rows) == 1
 
     def test_readonly_connection_cannot_write(self, populated_cache):
         """Verify that even if keyword check is bypassed, readonly mode prevents writes."""

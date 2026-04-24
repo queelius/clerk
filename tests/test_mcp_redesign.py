@@ -120,92 +120,118 @@ class TestClerkRead:
         assert "not found" in result["error"].lower()
 
 
-# --- Confirmation tokens ---
+# --- Persistent send-confirmation tokens ---
 
-class TestConfirmationTokens:
-    """Tests for the two-step send confirmation flow internals."""
+@pytest.fixture
+def api_with_tmp_cache(tmp_path):
+    """A ClerkAPI instance backed by an isolated SQLite cache."""
+    from clerk.api import ClerkAPI
 
-    def test_generate_and_validate_token(self):
-        from clerk.mcp_server import (
-            _confirmation_tokens,
-            _generate_confirmation_token,
-            _validate_confirmation_token,
-        )
+    cache = Cache(tmp_path / "test.db")
+    cfg = ClerkConfig(
+        accounts={
+            "test": AccountConfig(
+                protocol="imap",
+                imap=ImapConfig(host="localhost", port=993, username="t"),
+                smtp=SmtpConfig(host="localhost", port=587, username="t"),
+                **{"from": FromAddress(address="t@example.com", name="T")},
+            )
+        },
+        default_account="test",
+    )
+    return ClerkAPI(config=cfg, cache=cache)
 
-        _confirmation_tokens.clear()
 
-        draft_id = "draft_test123"
-        token = _generate_confirmation_token(draft_id)
+def _make_draft(account: str = "test", subject: str = "Hi", body: str = "body"):
+    from clerk.models import Draft
+
+    return Draft(
+        draft_id="draft_abc123",
+        account=account,
+        to=[Address(addr="a@example.com", name="A")],
+        subject=subject,
+        body_text=body,
+    )
+
+
+class TestSendConfirmationTokens:
+    """Tests for api.generate_send_token / consume_send_token (persistent, content-bound)."""
+
+    def test_generate_and_consume(self, api_with_tmp_cache):
+        draft = _make_draft()
+        token = api_with_tmp_cache.generate_send_token(draft)
 
         assert token is not None
-        assert len(token) == 32  # 16 bytes hex = 32 chars
-        assert draft_id in _confirmation_tokens
+        assert len(token) == 32  # 16 bytes hex
 
-        # Validate the token
-        valid, error = _validate_confirmation_token(draft_id, token)
+        valid, error = api_with_tmp_cache.consume_send_token(draft, token)
         assert valid is True
         assert error is None
 
-        # Token should be consumed (one-time use)
-        assert draft_id not in _confirmation_tokens
+        # Single-use: re-consume fails.
+        valid2, error2 = api_with_tmp_cache.consume_send_token(draft, token)
+        assert valid2 is False
+        assert "No confirmation token found" in error2
 
-    def test_invalid_token(self):
-        from clerk.mcp_server import (
-            _confirmation_tokens,
-            _generate_confirmation_token,
-            _validate_confirmation_token,
-        )
+    def test_invalid_token(self, api_with_tmp_cache):
+        draft = _make_draft()
+        api_with_tmp_cache.generate_send_token(draft)
 
-        _confirmation_tokens.clear()
-
-        draft_id = "draft_test456"
-        _generate_confirmation_token(draft_id)
-
-        valid, error = _validate_confirmation_token(draft_id, "wrong_token")
+        valid, error = api_with_tmp_cache.consume_send_token(draft, "wrong_token")
         assert valid is False
         assert "Invalid confirmation token" in error
 
-    def test_no_token_exists(self):
-        from clerk.mcp_server import _confirmation_tokens, _validate_confirmation_token
-
-        _confirmation_tokens.clear()
-
-        valid, error = _validate_confirmation_token("nonexistent", "any_token")
+    def test_no_token_exists(self, api_with_tmp_cache):
+        draft = _make_draft()
+        valid, error = api_with_tmp_cache.consume_send_token(draft, "any_token")
         assert valid is False
         assert "No confirmation token found" in error
 
-    def test_expired_token(self):
-        from clerk.mcp_server import (
-            _confirmation_tokens,
-            _validate_confirmation_token,
-        )
+    def test_expired_token(self, api_with_tmp_cache):
+        draft = _make_draft()
+        # Mint with a 0-second TTL so it's instantly expired.
+        token = api_with_tmp_cache.generate_send_token(draft, ttl_seconds=0)
 
-        _confirmation_tokens.clear()
-
-        draft_id = "draft_expired"
-        token = "test_token"
-        # Set expiry in the past
-        _confirmation_tokens[draft_id] = (token, time.time() - 1)
-
-        valid, error = _validate_confirmation_token(draft_id, token)
+        valid, error = api_with_tmp_cache.consume_send_token(draft, token)
         assert valid is False
         assert "expired" in error.lower()
 
-    def test_cleanup_expired_tokens(self):
-        from clerk.mcp_server import _cleanup_expired_tokens, _confirmation_tokens
+    def test_content_mutation_invalidates(self, api_with_tmp_cache):
+        """Editing the draft between preview and send must invalidate the token."""
+        draft = _make_draft(subject="Original subject")
+        token = api_with_tmp_cache.generate_send_token(draft)
 
-        _confirmation_tokens.clear()
+        # Mutate the draft (same draft_id, different content).
+        mutated = _make_draft(subject="MALICIOUS subject")
+        valid, error = api_with_tmp_cache.consume_send_token(mutated, token)
+        assert valid is False
+        assert "content changed" in error.lower()
 
-        # Add some tokens - one expired, one valid
-        _confirmation_tokens["expired1"] = ("token1", time.time() - 100)
-        _confirmation_tokens["expired2"] = ("token2", time.time() - 10)
-        _confirmation_tokens["valid1"] = ("token3", time.time() + 300)
+    def test_persistence_across_api_instances(self, tmp_path):
+        """Token survives restart — written to SQLite, not process memory."""
+        from clerk.api import ClerkAPI
 
-        _cleanup_expired_tokens()
+        cache = Cache(tmp_path / "test.db")
+        cfg = ClerkConfig(
+            accounts={
+                "test": AccountConfig(
+                    protocol="imap",
+                    imap=ImapConfig(host="localhost", port=993, username="t"),
+                    smtp=SmtpConfig(host="localhost", port=587, username="t"),
+                    **{"from": FromAddress(address="t@example.com", name="T")},
+                )
+            },
+            default_account="test",
+        )
 
-        assert "expired1" not in _confirmation_tokens
-        assert "expired2" not in _confirmation_tokens
-        assert "valid1" in _confirmation_tokens
+        api1 = ClerkAPI(config=cfg, cache=cache)
+        draft = _make_draft()
+        token = api1.generate_send_token(draft)
+
+        # New API instance, same cache file (simulating MCP server restart).
+        api2 = ClerkAPI(config=cfg, cache=Cache(tmp_path / "test.db"))
+        valid, error = api2.consume_send_token(draft, token)
+        assert valid is True, error
 
 
 # --- clerk_sql ---
@@ -394,16 +420,16 @@ class TestClerkSend:
 
         mock_api = MagicMock()
         mock_api.get_draft.return_value = mock_draft
+        mock_api.check_send_allowed.return_value = (True, None)
+        mock_api.generate_send_token.return_value = "tok_xyz"
         mock_get_api.return_value = mock_api
 
-        with (
-            patch("clerk.mcp_server.check_send_allowed", return_value=(True, None)),
-            patch("clerk.mcp_server.format_draft_preview", return_value="Preview text"),
-        ):
+        with patch("clerk.mcp_server.format_draft_preview", return_value="Preview text"):
             result = await clerk_send(draft_id="draft_1")
 
         assert result["status"] == "pending_confirmation"
-        assert "token" in result
+        assert result["token"] == "tok_xyz"
+        mock_api.generate_send_token.assert_called_once_with(mock_draft)
 
 
 # --- clerk_move ---
@@ -435,7 +461,9 @@ class TestClerkFlagRedesign:
 
         result = clerk_flag(message_id="<msg1>", action="flag")
         assert result["status"] == "success"
-        mock_api.flag_message.assert_called_once()
+        mock_api.set_flag.assert_called_once_with(
+            "<msg1>", MessageFlag.FLAGGED, True, account=None
+        )
 
     @patch("clerk.mcp_server.get_api")
     @patch("clerk.mcp_server.ensure_dirs")
@@ -447,7 +475,23 @@ class TestClerkFlagRedesign:
 
         result = clerk_flag(message_id="<msg1>", action="read")
         assert result["status"] == "success"
-        mock_api.mark_read.assert_called_once()
+        mock_api.set_flag.assert_called_once_with(
+            "<msg1>", MessageFlag.SEEN, True, account=None
+        )
+
+    @patch("clerk.mcp_server.get_api")
+    @patch("clerk.mcp_server.ensure_dirs")
+    def test_unread_action(self, _dirs, mock_get_api):
+        from clerk.mcp_server import clerk_flag
+
+        mock_api = MagicMock()
+        mock_get_api.return_value = mock_api
+
+        result = clerk_flag(message_id="<msg1>", action="unread")
+        assert result["status"] == "success"
+        mock_api.set_flag.assert_called_once_with(
+            "<msg1>", MessageFlag.SEEN, False, account=None
+        )
 
     @patch("clerk.mcp_server.get_api")
     @patch("clerk.mcp_server.ensure_dirs")
@@ -671,29 +715,27 @@ class TestResources:
 # --- clerk_sync all-accounts mode ---
 
 class TestClerkSyncAll:
-    @patch("clerk.mcp_server.get_config")
     @patch("clerk.mcp_server.get_api")
     @patch("clerk.mcp_server.ensure_dirs")
-    def test_sync_all_accounts(self, mock_dirs, mock_get_api, mock_get_config):
+    def test_sync_all_accounts(self, mock_dirs, mock_get_api):
         from clerk.mcp_server import clerk_sync
 
         mock_api = MagicMock()
-        mock_api.sync_folder.side_effect = [
-            {"synced": 5, "account": "siue", "folder": "INBOX"},
-            {"synced": 12, "account": "gmail", "folder": "INBOX"},
-        ]
+        mock_api.sync_all.return_value = {
+            "accounts": {
+                "siue": {"synced": 5, "account": "siue", "folder": "INBOX"},
+                "gmail": {"synced": 12, "account": "gmail", "folder": "INBOX"},
+            },
+            "total_synced": 17,
+        }
         mock_get_api.return_value = mock_api
-
-        mock_config = MagicMock()
-        mock_config.accounts = {"siue": MagicMock(), "gmail": MagicMock()}
-        mock_get_config.return_value = mock_config
 
         result = clerk_sync()
 
         assert result["total_synced"] == 17
         assert result["accounts"]["siue"]["synced"] == 5
         assert result["accounts"]["gmail"]["synced"] == 12
-        assert mock_api.sync_folder.call_count == 2
+        mock_api.sync_all.assert_called_once_with(folder="INBOX", full=False)
 
     @patch("clerk.mcp_server.get_api")
     @patch("clerk.mcp_server.ensure_dirs")

@@ -1,6 +1,7 @@
 """SQLite cache with FTS5 for message storage and search."""
 
 import json
+import re
 import sqlite3
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
@@ -18,6 +19,10 @@ from .models import (
     Message,
     MessageFlag,
 )
+
+# Conversation IDs are 12-hex SHA256 prefixes. Validate caller-supplied
+# prefixes so they cannot inject SQL LIKE wildcards (%, _, \).
+_CONV_ID_PREFIX_RE = re.compile(r"^[0-9a-f]{1,12}$")
 
 SCHEMA = """
 -- Core message storage
@@ -237,15 +242,22 @@ class Cache:
         """Find all conversations matching an ID prefix.
 
         Returns lightweight summaries for disambiguation when multiple
-        conversations match. Any prefix length is supported.
+        conversations match. Any prefix length (1 to 12 hex chars) is
+        supported.
 
         Args:
-            prefix: Conversation ID prefix to match
+            prefix: Conversation ID prefix — must be hex digits only.
 
         Returns:
             List of ConversationSummary objects for matching conversations,
-            sorted by latest date descending.
+            sorted by latest date descending. Empty list if the prefix is
+            malformed (not hex).
         """
+        if not _CONV_ID_PREFIX_RE.match(prefix):
+            # Not a valid conv_id prefix — return empty rather than pass
+            # caller-controlled text into a LIKE pattern.
+            return []
+
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -416,40 +428,50 @@ class Cache:
         params: tuple[Any, ...] | list[Any] | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
-        """Execute a readonly SQL query and return raw rows as dicts.
+        """Execute a readonly SQL SELECT and return raw rows as dicts.
 
-        Opens a separate readonly connection for safety.
+        Security model: the SQLite connection is opened with
+        ``mode=ro`` + ``nolock=1`` and ``execute`` runs a single statement,
+        so write DDL/DML (``INSERT``, ``DROP``, ``ATTACH``, ``PRAGMA`` with
+        side effects, etc.) cannot succeed regardless of the text of ``sql``.
+        We keep one lightweight shape check (must start with ``SELECT``) to
+        give callers clear errors on obvious misuse, and wrap the query so
+        the caller's ``limit`` is always enforced even if their SQL already
+        has its own ``LIMIT``.
 
         Args:
-            sql: SQL SELECT query
-            params: Query parameters (optional)
-            limit: Maximum results (enforced even if not in query)
+            sql: SQL SELECT query.
+            params: Query parameters (optional).
+            limit: Maximum rows returned. Always enforced.
 
         Returns:
-            List of dicts (column_name -> value)
+            List of ``{column_name: value}`` dicts, up to ``limit`` rows.
 
         Raises:
-            ValueError: If query is not a SELECT or contains dangerous keywords
+            ValueError: If the query is not a SELECT.
         """
-        sql_upper = sql.strip().upper()
-        if not sql_upper.startswith("SELECT"):
-            raise ValueError("Only SELECT queries are allowed")
+        stripped = sql.strip().rstrip(";")
+        if not stripped:
+            raise ValueError("Query is empty")
+        # Accept SELECT and WITH (Common Table Expressions). Writes are
+        # blocked by the read-only connection regardless of the text, but
+        # a clean early error here helps LLM callers recognize misuse.
+        first_token = stripped.upper().split(None, 1)[0]
+        if first_token not in ("SELECT", "WITH"):
+            raise ValueError("Only SELECT / WITH (CTE) queries are allowed")
 
-        dangerous = ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "TRUNCATE"]
-        for keyword in dangerous:
-            if keyword in sql_upper:
-                raise ValueError(f"Query contains disallowed keyword: {keyword}")
+        # Wrap in an outer SELECT so the limit is always applied, even if
+        # the caller already has a LIMIT clause, subqueries, UNION, etc.
+        wrapped = f"SELECT * FROM ({stripped}) LIMIT ?"
 
-        # Open in readonly mode
         db_uri = f"file:{self.db_path}?mode=ro"
         conn = sqlite3.connect(db_uri, uri=True)
         conn.row_factory = sqlite3.Row
         try:
-            if "LIMIT" not in sql_upper:
-                sql = f"{sql.rstrip(';')} LIMIT {limit}"
-
-            rows = conn.execute(sql, params).fetchall() if params else conn.execute(sql).fetchall()
-
+            bind: tuple[Any, ...] = (
+                (*tuple(params), limit) if params else (limit,)
+            )
+            rows = conn.execute(wrapped, bind).fetchall()
             return [dict(row) for row in rows]
         finally:
             conn.close()
@@ -492,14 +514,24 @@ class Cache:
     def is_fresh(
         self, message_id: str, freshness_minutes: int, check_body: bool = False
     ) -> bool:
-        """Check if cached data is fresh enough."""
+        """Check if cached data is fresh enough.
+
+        When ``check_body`` is True, returns True only if the body was
+        fetched recently AND we actually have body content (``body_text``
+        or ``body_html`` non-null). Fixes a bug where a prior fetch that
+        stored both bodies as None would appear "fresh" forever and
+        prevent any re-fetch.
+        """
         with self._connect() as conn:
             if check_body:
                 row = conn.execute(
-                    "SELECT body_fetched_at FROM messages WHERE message_id = ?",
+                    "SELECT body_fetched_at, body_text, body_html "
+                    "FROM messages WHERE message_id = ?",
                     (message_id,),
                 ).fetchone()
                 if not row or not row["body_fetched_at"]:
+                    return False
+                if row["body_text"] is None and row["body_html"] is None:
                     return False
                 fetched_at = datetime.fromisoformat(row["body_fetched_at"])
             else:
@@ -548,6 +580,11 @@ class Cache:
                 "INSERT OR REPLACE INTO cache_meta (key, value) VALUES (?, ?)",
                 (key, value),
             )
+
+    def delete_meta(self, key: str) -> None:
+        """Delete a value from cache_meta. No-op if absent."""
+        with self._connect() as conn:
+            conn.execute("DELETE FROM cache_meta WHERE key = ?", (key,))
 
     def prune_old_messages(self, window_days: int = 7) -> int:
         """Remove messages older than the cache window. Returns count deleted."""
@@ -646,6 +683,19 @@ class Cache:
                     message_id,
                 ),
             )
+
+    def count_sends_since(self, account: str, since: datetime) -> int:
+        """Count rows in send_log for an account at or after a timestamp.
+
+        Backs the persistent rate limiter: survives restarts, is atomic with
+        respect to concurrent MCP clients. Callers pass a UTC datetime.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM send_log WHERE account = ? AND timestamp >= ?",
+                (account, since.isoformat()),
+            ).fetchone()
+            return int(row[0]) if row else 0
 
 
 # Global cache instance

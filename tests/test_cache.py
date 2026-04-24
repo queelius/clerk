@@ -372,9 +372,10 @@ class TestPrefixMatching:
 
     def test_get_conversation_unique_prefix(self, cache):
         """get_conversation returns conversation for unique prefix."""
+        # Conv IDs are always 12 hex chars in production.
         msg = Message(
             message_id="<test@example.com>",
-            conv_id="unique123abc",
+            conv_id="abcdef123456",
             account="test",
             folder="INBOX",
             **{"from": Address(addr="alice@example.com")},
@@ -387,16 +388,16 @@ class TestPrefixMatching:
         cache.store_message(msg)
 
         # Unique prefix returns the conversation
-        conv = cache.get_conversation("unique")
+        conv = cache.get_conversation("abc")
         assert conv is not None
-        assert conv.conv_id == "unique123abc"
+        assert conv.conv_id == "abcdef123456"
         assert conv.subject == "Test Subject"
 
     def test_get_conversation_ambiguous_prefix_returns_none(self, cache):
         """get_conversation returns None for ambiguous prefix."""
         msg1 = Message(
             message_id="<msg1@example.com>",
-            conv_id="ambig123",
+            conv_id="aaaabbb11111",
             account="test",
             folder="INBOX",
             **{"from": Address(addr="alice@example.com")},
@@ -406,7 +407,7 @@ class TestPrefixMatching:
         )
         msg2 = Message(
             message_id="<msg2@example.com>",
-            conv_id="ambig456",
+            conv_id="aaaabbb22222",
             account="test",
             folder="INBOX",
             **{"from": Address(addr="bob@example.com")},
@@ -418,18 +419,39 @@ class TestPrefixMatching:
         cache.store_message(msg1)
         cache.store_message(msg2)
 
-        # Ambiguous prefix returns None
-        conv = cache.get_conversation("ambig")
+        # Ambiguous prefix returns None (multiple matches)
+        conv = cache.get_conversation("aaaa")
         assert conv is None
 
         # But more specific prefix works
-        conv1 = cache.get_conversation("ambig1")
+        conv1 = cache.get_conversation("aaaabbb1")
         assert conv1 is not None
-        assert conv1.conv_id == "ambig123"
+        assert conv1.conv_id == "aaaabbb11111"
 
-        conv2 = cache.get_conversation("ambig4")
+        conv2 = cache.get_conversation("aaaabbb2")
         assert conv2 is not None
-        assert conv2.conv_id == "ambig456"
+        assert conv2.conv_id == "aaaabbb22222"
+
+    def test_prefix_rejects_non_hex(self, cache):
+        """Caller-supplied prefixes with non-hex chars (e.g. SQL wildcards) return empty."""
+        msg = Message(
+            message_id="<test@example.com>",
+            conv_id="abcdef123456",
+            account="test",
+            folder="INBOX",
+            **{"from": Address(addr="alice@example.com")},
+            date=datetime(2025, 1, 1, 10, 0, 0),
+            flags=[],
+            headers_fetched_at=datetime.now(UTC),
+        )
+        cache.store_message(msg)
+
+        # A bare '%' would match everything via LIKE; must be rejected.
+        assert cache.find_conversations_by_prefix("%") == []
+        assert cache.find_conversations_by_prefix("_") == []
+        assert cache.find_conversations_by_prefix("\\") == []
+        # Non-hex chars (g-z) cannot be part of a SHA256 prefix.
+        assert cache.find_conversations_by_prefix("xyz") == []
 
     def test_get_conversation_exact_match(self, cache):
         """get_conversation exact match takes precedence."""
@@ -472,7 +494,7 @@ class TestPrefixMatching:
         """find_conversations_by_prefix returns complete summary data."""
         msg1 = Message(
             message_id="<msg1@example.com>",
-            conv_id="conv_test",
+            conv_id="ccc0bbb13579",
             account="test_account",
             folder="INBOX",
             **{"from": Address(addr="alice@example.com")},
@@ -484,7 +506,7 @@ class TestPrefixMatching:
         )
         msg2 = Message(
             message_id="<msg2@example.com>",
-            conv_id="conv_test",
+            conv_id="ccc0bbb13579",
             account="test_account",
             folder="INBOX",
             **{"from": Address(addr="bob@example.com")},
@@ -499,11 +521,11 @@ class TestPrefixMatching:
         cache.store_message(msg1)
         cache.store_message(msg2)
 
-        matches = cache.find_conversations_by_prefix("conv")
+        matches = cache.find_conversations_by_prefix("ccc0")
         assert len(matches) == 1
 
         summary = matches[0]
-        assert summary.conv_id == "conv_test"
+        assert summary.conv_id == "ccc0bbb13579"
         assert summary.message_count == 2
         assert summary.unread_count == 1  # msg1 is unread
         assert summary.account == "test_account"

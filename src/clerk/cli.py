@@ -7,7 +7,7 @@ import typer
 from rich.console import Console
 
 from . import __version__
-from .cache import get_cache
+from .api import get_api
 from .config import (
     AccountConfig,
     FromAddress,
@@ -22,7 +22,7 @@ from .config import (
     save_config,
     save_password,
 )
-from .imap_client import ImapClient, get_imap_client
+from .imap_client import ImapClient
 from .models import ExitCode
 
 app = typer.Typer(
@@ -78,25 +78,7 @@ def status(
 ) -> None:
     """Show connection status and account info."""
     ensure_dirs()
-    config = get_config()
-
-    status_info: dict[str, Any] = {
-        "version": __version__,
-        "accounts": {},
-    }
-
-    for name in config.accounts:
-        try:
-            with get_imap_client(name) as client:
-                status_info["accounts"][name] = {
-                    "connected": True,
-                    "folders": len(client.list_folders()),
-                }
-        except Exception as e:
-            status_info["accounts"][name] = {
-                "connected": False,
-                "error": str(e),
-            }
+    status_info = get_api().get_status()
 
     if as_json:
         output_json(status_info)
@@ -120,10 +102,7 @@ def sync(
 ) -> None:
     """Sync email cache from IMAP server."""
     ensure_dirs()
-    from .api import get_api
-
-    api = get_api()
-    result = api.sync_folder(account=account, folder=folder, full=full)
+    result = get_api().sync_folder(account=account, folder=folder, full=full)
     console.print(
         f"[green]Synced {result['synced']} messages[/green] "
         f"from {result['account']}/{result['folder']}"
@@ -144,8 +123,7 @@ def cache_status(
 ) -> None:
     """Show cache statistics."""
     ensure_dirs()
-    cache = get_cache()
-    stats = cache.get_stats()
+    stats = get_api().get_cache_stats()
 
     if as_json:
         output_json(stats.model_dump())
@@ -170,10 +148,8 @@ def cache_status(
 def cache_clear() -> None:
     """Clear all cached data."""
     ensure_dirs()
-    cache = get_cache()
-
     if typer.confirm("Clear all cached messages and drafts?"):
-        cache.clear()
+        get_api().clear_cache()
         console.print("[green]Cache cleared.[/green]")
 
 

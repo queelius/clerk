@@ -1,12 +1,18 @@
-"""ClerkAPI - Shared business logic layer for clerk.
+"""ClerkAPI - Single source of truth for writes, sync, and status.
 
-This module provides a unified API that both the CLI and MCP server use.
-All email operations go through this layer to ensure consistent behavior.
+All mutations (sends, flags, moves, syncs) route through this layer. Reads
+bypass it via ``clerk_sql`` for LLM flexibility. The MCP server and CLI are
+thin adapters on top.
 """
 
+import asyncio
+import hashlib
 import html
+import json
 import re
-from datetime import datetime
+import secrets
+import sys
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .cache import Cache, get_cache
@@ -24,7 +30,7 @@ from .models import (
     SendResult,
     UnreadCounts,
 )
-from .smtp_client import check_send_allowed, send_draft
+from .smtp_client import SmtpClient
 
 
 def html_to_text(html_body: str) -> str:
@@ -44,12 +50,50 @@ def html_to_text(html_body: str) -> str:
     return text.strip()
 
 
+def format_draft_preview(draft: Draft) -> str:
+    """Render a human- and LLM-readable preview of a draft before send."""
+    lines = [f"From: {draft.account}"]
+    lines.append(f"To: {', '.join(str(a) for a in draft.to)}")
+    if draft.cc:
+        lines.append(f"Cc: {', '.join(str(a) for a in draft.cc)}")
+    if draft.bcc:
+        lines.append(f"Bcc: {', '.join(str(a) for a in draft.bcc)}")
+    lines.append(f"Subject: {draft.subject}")
+    lines.append("")
+    lines.append(draft.body_text)
+    return "\n".join(lines)
+
+
+def draft_content_hash(draft: Draft) -> str:
+    """Stable hash of the parts of a draft a user would confirm in a preview.
+
+    Includes everything the preview shows plus body_html (which is sent but
+    not displayed). Used by the persistent two-step confirmation: if the
+    draft is mutated between step 1 (preview) and step 2 (send), the hash
+    changes and the stored token is invalidated.
+    """
+    canonical = {
+        "account": draft.account,
+        "to": [[a.addr, a.name] for a in draft.to],
+        "cc": [[a.addr, a.name] for a in draft.cc],
+        "bcc": [[a.addr, a.name] for a in draft.bcc],
+        "subject": draft.subject,
+        "body_text": draft.body_text,
+        "body_html": draft.body_html,
+    }
+    payload = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+SEND_TOKEN_TTL_SECONDS = 300
+_SEND_TOKEN_PREFIX = "send_token:"
+
+
 class ClerkAPI:
     """Unified API for clerk email operations.
 
-    This class centralizes all business logic and can be used by:
-    - MCP server tools
-    - Programmatic usage
+    Single source of truth for mutations. The MCP server and CLI both delegate
+    here; direct smtp_client / cache writes from other layers are a code smell.
     """
 
     def __init__(
@@ -58,13 +102,6 @@ class ClerkAPI:
         cache: Cache | None = None,
         draft_manager: DraftManager | None = None,
     ) -> None:
-        """Initialize the API.
-
-        Args:
-            config: Configuration (uses default if not provided)
-            cache: Cache instance (uses default if not provided)
-            draft_manager: Draft manager (uses default if not provided)
-        """
         ensure_dirs()
         self._config = config
         self._cache = cache
@@ -72,21 +109,18 @@ class ClerkAPI:
 
     @property
     def config(self) -> ClerkConfig:
-        """Get configuration, loading default if needed."""
         if self._config is None:
             self._config = get_config()
         return self._config
 
     @property
     def cache(self) -> Cache:
-        """Get cache, loading default if needed."""
         if self._cache is None:
             self._cache = get_cache()
         return self._cache
 
     @property
     def drafts(self) -> DraftManager:
-        """Get draft manager, loading default if needed."""
         if self._draft_manager is None:
             self._draft_manager = get_draft_manager()
         return self._draft_manager
@@ -95,65 +129,47 @@ class ClerkAPI:
     # Inbox & Message Operations
     # =========================================================================
 
+    def _ensure_body(self, msg: Message, fresh: bool) -> None:
+        """Fetch the body from IMAP if the cache has none or is stale.
+
+        Cache hit with body_text=None is only trusted if body_fetched_at was
+        recent — otherwise the fetch is retried. Prevents the "None-forever"
+        cache bug.
+        """
+        needs_fetch = msg.body_text is None and (
+            fresh
+            or not self.cache.is_fresh(
+                msg.message_id,
+                self.config.cache.body_freshness_min,
+                check_body=True,
+            )
+        )
+        if not needs_fetch:
+            return
+
+        with get_imap_client(msg.account) as client:
+            body_text, body_html = client.fetch_message_body(msg.folder, msg.message_id)
+            if body_text is None and body_html:
+                body_text = html_to_text(body_html)
+            self.cache.update_body(msg.message_id, body_text, body_html)
+            msg.body_text = body_text
+            msg.body_html = body_html
+
     def get_conversation(
         self, conv_id: str, fresh: bool = False
     ) -> Conversation | None:
-        """Get a conversation by ID.
-
-        Args:
-            conv_id: Conversation ID
-            fresh: Bypass cache for body fetching
-
-        Returns:
-            Conversation with all messages, or None if not found
-        """
+        """Get a conversation by ID, fetching bodies as needed."""
         conv = self.cache.get_conversation(conv_id)
-
         if conv:
-            # Fetch bodies if needed
             for msg in conv.messages:
-                if msg.body_text is None and (fresh or not self.cache.is_fresh(
-                    msg.message_id,
-                    self.config.cache.body_freshness_min,
-                    check_body=True,
-                )):
-                    with get_imap_client(msg.account) as client:
-                        body_text, body_html = client.fetch_message_body(
-                            msg.folder, msg.message_id
-                        )
-                        if body_text is None and body_html:
-                            body_text = html_to_text(body_html)
-                        self.cache.update_body(msg.message_id, body_text, body_html)
-                        msg.body_text = body_text
-                        msg.body_html = body_html
-
+                self._ensure_body(msg, fresh)
         return conv
 
     def get_message(self, message_id: str, fresh: bool = False) -> Message | None:
-        """Get a single message by ID.
-
-        Args:
-            message_id: Message ID
-            fresh: Bypass cache for body fetching
-
-        Returns:
-            Message or None if not found
-        """
+        """Get a single message by ID, fetching body as needed."""
         msg = self.cache.get_message(message_id)
-
-        if msg and msg.body_text is None and (fresh or not self.cache.is_fresh(
-            msg.message_id, self.config.cache.body_freshness_min, check_body=True
-        )):
-            with get_imap_client(msg.account) as client:
-                body_text, body_html = client.fetch_message_body(
-                    msg.folder, msg.message_id
-                )
-                if body_text is None and body_html:
-                    body_text = html_to_text(body_html)
-                self.cache.update_body(msg.message_id, body_text, body_html)
-                msg.body_text = body_text
-                msg.body_html = body_html
-
+        if msg:
+            self._ensure_body(msg, fresh)
         return msg
 
     # =========================================================================
@@ -169,22 +185,9 @@ class ClerkAPI:
         reply_to_conv_id: str | None = None,
         account: str | None = None,
     ) -> Draft:
-        """Create a new draft message.
-
-        Args:
-            to: Recipient addresses
-            subject: Subject line
-            body: Message body
-            cc: CC recipients (optional)
-            reply_to_conv_id: Conversation ID to reply to (optional)
-            account: Account name (uses default if not provided)
-
-        Returns:
-            Created Draft
-        """
+        """Create a new draft message."""
         account_name, _ = self.config.get_account(account)
 
-        # Convert strings to Address objects
         def to_address(a: str | Address) -> Address:
             if isinstance(a, Address):
                 return a
@@ -199,14 +202,13 @@ class ClerkAPI:
                 conv_id=reply_to_conv_id,
                 body_text=body,
             )
-        else:
-            return self.drafts.create(
-                account=account_name,
-                to=to_addrs,
-                cc=cc_addrs,
-                subject=subject,
-                body_text=body,
-            )
+        return self.drafts.create(
+            account=account_name,
+            to=to_addrs,
+            cc=cc_addrs,
+            subject=subject,
+            body_text=body,
+        )
 
     def create_reply(
         self,
@@ -215,21 +217,7 @@ class ClerkAPI:
         reply_all: bool = False,
         account: str | None = None,
     ) -> Draft:
-        """Create a reply draft to an existing message.
-
-        Args:
-            message_id: Message ID to reply to
-            body: Reply body text
-            reply_all: Include all original recipients
-            account: Account name (uses message's account if not provided)
-
-        Returns:
-            Created Draft
-
-        Raises:
-            ValueError: If original message not found
-        """
-        # Use cache lookup — we only need metadata (conv_id, account), not body
+        """Create a reply draft to an existing message."""
         msg = self.cache.get_message(message_id)
         if not msg:
             raise ValueError(f"Message not found: {message_id}")
@@ -245,119 +233,253 @@ class ClerkAPI:
         )
 
     def get_draft(self, draft_id: str) -> Draft | None:
-        """Get a draft by ID."""
         return self.drafts.get(draft_id)
 
     def list_drafts(self, account: str | None = None) -> list[Draft]:
-        """List all drafts, optionally filtered by account."""
         return self.drafts.list(account=account)
 
     def update_draft(self, draft: Draft) -> None:
-        """Update an existing draft."""
         self.drafts.update(draft)
 
     def delete_draft(self, draft_id: str) -> bool:
-        """Delete a draft.
-
-        Returns:
-            True if deleted, False if not found
-        """
         return self.drafts.delete(draft_id)
 
-    def send_draft(
-        self, draft_id: str, skip_confirmation: bool = False
-    ) -> SendResult:
-        """Send a draft message.
+    # =========================================================================
+    # Send confirmation tokens (persistent, content-bound, single-use)
+    # =========================================================================
 
-        Args:
-            draft_id: Draft ID to send
-            skip_confirmation: Skip send policy checks
+    def generate_send_token(
+        self, draft: Draft, ttl_seconds: int = SEND_TOKEN_TTL_SECONDS
+    ) -> str:
+        """Mint a send-confirmation token bound to the draft's content.
 
-        Returns:
-            SendResult with success status and message_id or error
+        Stored in ``cache_meta`` as a SHA256 hash (not the raw token) along
+        with the draft's content hash and an absolute expiry timestamp.
+        Survives MCP server restarts; consumed by ``consume_send_token``.
+        """
+        token = secrets.token_hex(16)
+        expires_at = datetime.now(UTC) + timedelta(seconds=ttl_seconds)
+        payload = json.dumps(
+            {
+                "token_hash": hashlib.sha256(token.encode()).hexdigest(),
+                "content_hash": draft_content_hash(draft),
+                "expires_at": expires_at.isoformat(),
+            }
+        )
+        self.cache.set_meta(_SEND_TOKEN_PREFIX + draft.draft_id, payload)
+        return token
+
+    def consume_send_token(
+        self, draft: Draft, token: str
+    ) -> tuple[bool, str | None]:
+        """Validate and single-use a send-confirmation token.
+
+        Returns ``(True, None)`` on success. On any failure the token is
+        removed and a clear reason is returned. Failure modes: missing,
+        expired, wrong token, draft mutated after preview.
+        """
+        key = _SEND_TOKEN_PREFIX + draft.draft_id
+        raw = self.cache.get_meta(key)
+        if not raw:
+            return (
+                False,
+                "No confirmation token found. Call clerk_send without a "
+                "token first to get one.",
+            )
+
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            self.cache.delete_meta(key)
+            return False, "Corrupt confirmation token — please retry."
+
+        try:
+            expires_at = datetime.fromisoformat(data["expires_at"])
+        except (KeyError, ValueError):
+            self.cache.delete_meta(key)
+            return False, "Corrupt confirmation token — please retry."
+
+        if datetime.now(UTC) > expires_at:
+            self.cache.delete_meta(key)
+            return (
+                False,
+                "Confirmation token expired. Call clerk_send again to get a "
+                "fresh preview and token.",
+            )
+
+        expected = data.get("token_hash", "")
+        actual = hashlib.sha256(token.encode()).hexdigest()
+        if not secrets.compare_digest(actual, expected):
+            return False, "Invalid confirmation token."
+
+        # Content binding: if the draft was edited between preview and send,
+        # the hash differs and we refuse to send the mutated draft.
+        if data.get("content_hash") != draft_content_hash(draft):
+            self.cache.delete_meta(key)
+            return (
+                False,
+                "Draft content changed after preview. Re-run clerk_send to "
+                "review the new contents and get a fresh token.",
+            )
+
+        # Single-use: consume the token after successful validation.
+        self.cache.delete_meta(key)
+        return True, None
+
+    # =========================================================================
+    # Send (single choke point for all outbound email)
+    # =========================================================================
+
+    def check_send_allowed(
+        self, draft: Draft, account_name: str
+    ) -> tuple[bool, str | None]:
+        """Validate a draft is safe to send.
+
+        Enforces: persistent rate limit (from ``send_log``), blocked recipients,
+        and draft/account match. Used by both the API send path and MCP's
+        two-step preview.
+        """
+        send_config = self.config.send
+
+        # Persistent rate limit: count rows in send_log within the last hour.
+        hour_ago = datetime.now(UTC) - timedelta(hours=1)
+        recent = self.cache.count_sends_since(account_name, hour_ago)
+        if recent >= send_config.rate_limit:
+            return False, (
+                f"Rate limit exceeded: {recent}/{send_config.rate_limit} "
+                f"sends in the last hour"
+            )
+
+        blocked = {addr.lower() for addr in send_config.blocked_recipients}
+        for addr in draft.to + draft.cc + draft.bcc:
+            if addr.addr.lower() in blocked:
+                return False, f"Recipient {addr.addr} is blocked"
+
+        if draft.account != account_name:
+            return (
+                False,
+                f"Draft account '{draft.account}' doesn't match '{account_name}'",
+            )
+
+        return True, None
+
+    async def send_draft_async(self, draft_id: str) -> SendResult:
+        """Send a draft (single authoritative send path).
+
+        Orchestrates policy checks, SMTP transport, audit log, and draft
+        deletion. Two-step confirmation (persistent tokens bound to content
+        hash) lives one layer up in the MCP server — this method assumes its
+        caller has already established a human/LLM decision to send.
         """
         draft = self.drafts.get(draft_id)
         if not draft:
-            return SendResult(
-                success=False,
-                error=f"Draft not found: {draft_id}",
-                timestamp=datetime.now(),
-            )
+            return SendResult(success=False, error=f"Draft not found: {draft_id}")
 
-        if not skip_confirmation:
-            allowed, error = check_send_allowed(draft, draft.account)
-            if not allowed:
-                return SendResult(
-                    success=False,
-                    error=error or "Send blocked by policy",
-                    timestamp=datetime.now(),
+        try:
+            name, account_config = self.config.get_account(draft.account)
+        except ValueError as e:
+            return SendResult(success=False, error=str(e))
+
+        allowed, error = self.check_send_allowed(draft, name)
+        if not allowed:
+            return SendResult(success=False, error=error)
+
+        client = SmtpClient(name, account_config)
+        result = await client.send_async(draft)
+
+        if result.success:
+            # Audit log is best-effort: a disk-full error here should not
+            # swallow a successful send. Log to stderr and continue.
+            try:
+                self.cache.log_send(
+                    account=name,
+                    to=draft.to,
+                    cc=draft.cc,
+                    bcc=draft.bcc,
+                    subject=draft.subject,
+                    message_id=result.message_id,
+                )
+            except Exception as e:
+                print(
+                    f"Warning: audit log write failed after send: {e}",
+                    file=sys.stderr,
                 )
 
-        return send_draft(draft_id)
+            try:
+                self.drafts.delete(draft_id)
+            except Exception as e:
+                print(
+                    f"Warning: draft delete failed after send: {e}",
+                    file=sys.stderr,
+                )
+
+        return result
+
+    def send_draft(self, draft_id: str) -> SendResult:
+        """Synchronous wrapper for send_draft_async.
+
+        Fails inside a running event loop; use send_draft_async there.
+        """
+        return asyncio.run(self.send_draft_async(draft_id))
 
     # =========================================================================
     # Message Actions
     # =========================================================================
 
-    def mark_read(self, message_id: str, account: str | None = None) -> None:
-        """Mark a message as read."""
+    def set_flag(
+        self,
+        message_id: str,
+        flag: MessageFlag,
+        on: bool,
+        account: str | None = None,
+    ) -> None:
+        """Add or remove a flag on a message.
+
+        Server-first: IMAP call is authoritative. Cache write failures are
+        logged but not raised — the cache self-heals on next sync.
+        """
         account_name, _ = self.config.get_account(account)
 
         msg = self.cache.get_message(message_id)
         folder = msg.folder if msg else "INBOX"
 
         with get_imap_client(account_name) as client:
-            client.add_flags(folder, message_id, [MessageFlag.SEEN])
+            if on:
+                client.add_flags(folder, message_id, [flag])
+            else:
+                client.remove_flags(folder, message_id, [flag])
 
         if msg:
-            flags = list(msg.flags)
-            if MessageFlag.SEEN not in flags:
-                flags.append(MessageFlag.SEEN)
-            self.cache.update_flags(message_id, flags)
+            try:
+                if on:
+                    flags = list(msg.flags)
+                    if flag not in flags:
+                        flags.append(flag)
+                else:
+                    flags = [f for f in msg.flags if f != flag]
+                self.cache.update_flags(message_id, flags)
+            except Exception as e:
+                print(
+                    f"Warning: cache update failed after IMAP flag change "
+                    f"({flag.value}={on}): {e}. Will self-heal on next sync.",
+                    file=sys.stderr,
+                )
+
+    def mark_read(self, message_id: str, account: str | None = None) -> None:
+        """Mark a message as read."""
+        self.set_flag(message_id, MessageFlag.SEEN, True, account=account)
 
     def mark_unread(self, message_id: str, account: str | None = None) -> None:
         """Mark a message as unread."""
-        account_name, _ = self.config.get_account(account)
-
-        msg = self.cache.get_message(message_id)
-        folder = msg.folder if msg else "INBOX"
-
-        with get_imap_client(account_name) as client:
-            client.remove_flags(folder, message_id, [MessageFlag.SEEN])
-
-        if msg:
-            flags = [f for f in msg.flags if f != MessageFlag.SEEN]
-            self.cache.update_flags(message_id, flags)
+        self.set_flag(message_id, MessageFlag.SEEN, False, account=account)
 
     def flag_message(self, message_id: str, account: str | None = None) -> None:
         """Flag/star a message."""
-        account_name, _ = self.config.get_account(account)
-
-        msg = self.cache.get_message(message_id)
-        folder = msg.folder if msg else "INBOX"
-
-        with get_imap_client(account_name) as client:
-            client.add_flags(folder, message_id, [MessageFlag.FLAGGED])
-
-        if msg:
-            flags = list(msg.flags)
-            if MessageFlag.FLAGGED not in flags:
-                flags.append(MessageFlag.FLAGGED)
-            self.cache.update_flags(message_id, flags)
+        self.set_flag(message_id, MessageFlag.FLAGGED, True, account=account)
 
     def unflag_message(self, message_id: str, account: str | None = None) -> None:
         """Remove flag from a message."""
-        account_name, _ = self.config.get_account(account)
-
-        msg = self.cache.get_message(message_id)
-        folder = msg.folder if msg else "INBOX"
-
-        with get_imap_client(account_name) as client:
-            client.remove_flags(folder, message_id, [MessageFlag.FLAGGED])
-
-        if msg:
-            flags = [f for f in msg.flags if f != MessageFlag.FLAGGED]
-            self.cache.update_flags(message_id, flags)
+        self.set_flag(message_id, MessageFlag.FLAGGED, False, account=account)
 
     def move_message(
         self,
@@ -366,38 +488,48 @@ class ClerkAPI:
         from_folder: str = "INBOX",
         account: str | None = None,
     ) -> None:
-        """Move a message to another folder."""
+        """Move a message to another folder (server-first, cache best-effort)."""
         account_name, _ = self.config.get_account(account)
 
         with get_imap_client(account_name) as client:
             client.move_message(message_id, from_folder, to_folder)
 
-        self.cache.move_message(message_id, to_folder)
+        try:
+            self.cache.move_message(message_id, to_folder)
+        except Exception as e:
+            print(
+                f"Warning: cache update failed after IMAP move to {to_folder}: "
+                f"{e}. Will self-heal on next sync.",
+                file=sys.stderr,
+            )
 
     def archive_message(self, message_id: str, account: str | None = None) -> None:
-        """Archive a message."""
+        """Archive a message (server-first, cache best-effort)."""
         account_name, _ = self.config.get_account(account)
 
         with get_imap_client(account_name) as client:
             client.archive_message(message_id)
 
-        self.cache.move_message(message_id, "Archive")
+        try:
+            self.cache.move_message(message_id, "Archive")
+        except Exception as e:
+            print(
+                f"Warning: cache update failed after IMAP archive: {e}. "
+                f"Will self-heal on next sync.",
+                file=sys.stderr,
+            )
 
     # =========================================================================
     # Folder Operations
     # =========================================================================
 
     def list_folders(self, account: str | None = None) -> list[FolderInfo]:
-        """List all folders for an account."""
         account_name, _ = self.config.get_account(account)
-
         with get_imap_client(account_name) as client:
             return client.list_folders()
 
     def get_unread_counts(self, account: str | None = None) -> UnreadCounts:
-        """Get unread message counts by folder."""
         account_name, _ = self.config.get_account(account)
-
         with get_imap_client(account_name) as client:
             return client.get_unread_counts()
 
@@ -413,21 +545,11 @@ class ClerkAPI:
     ) -> dict[str, Any]:
         """Sync a folder from IMAP, fetching only new messages.
 
-        Uses UID-based incremental sync: only messages with UIDs higher than
-        the last known UID are fetched. On first sync (or full=True), fetches
-        the most recent batch.
-
-        Args:
-            account: Account name (uses default if not provided)
-            folder: Folder to sync (default: INBOX)
-            full: If True, re-fetch everything (ignore sync state)
-
-        Returns:
-            Dict with synced count, account, folder
+        Advances sync state only when store succeeds; on store failure the
+        sync state is left alone so the next sync retries the same UIDs.
         """
         account_name, _ = self.config.get_account(account)
 
-        # Get the last known UID for this folder
         since_uid = 0
         if not full:
             state = self.cache.get_sync_state(account_name, folder)
@@ -444,32 +566,49 @@ class ClerkAPI:
             for msg in messages:
                 self.cache.store_message(msg)
 
-        # Update sync state only if we saw new UIDs
         if highest_uid > since_uid:
             self.cache.set_sync_state(account_name, folder, highest_uid)
 
+        # Only mark the folder as "freshly synced" when we actually saw the
+        # server (not on partial-fetch failure before store). Storing above
+        # is inside the `with` block; reaching here means it completed.
         self.cache.mark_inbox_synced(account_name)
 
         return {
             "synced": len(messages),
             "account": account_name,
             "folder": folder,
+            "last_uid": highest_uid,
         }
+
+    def sync_all(
+        self, folder: str = "INBOX", full: bool = False
+    ) -> dict[str, Any]:
+        """Sync the given folder across all configured accounts."""
+        results: dict[str, Any] = {"accounts": {}, "total_synced": 0}
+        for acct_name in self.config.accounts:
+            try:
+                result = self.sync_folder(
+                    account=acct_name, folder=folder, full=full
+                )
+                results["accounts"][acct_name] = result
+                results["total_synced"] += result["synced"]
+            except Exception as e:
+                results["accounts"][acct_name] = {"error": str(e)}
+        return results
 
     # =========================================================================
     # Cache & Status Operations
     # =========================================================================
 
     def get_cache_stats(self) -> CacheStats:
-        """Get cache statistics."""
         return self.cache.get_stats()
 
     def clear_cache(self) -> None:
-        """Clear all cached data."""
         self.cache.clear()
 
     def get_status(self) -> dict[str, Any]:
-        """Get overall status information."""
+        """Get overall status: version + per-account connection health."""
         from . import __version__
 
         status: dict[str, Any] = {

@@ -320,6 +320,151 @@ class TestCacheOperations:
         assert stats.message_count == 0
 
 
+class TestSendPolicyPersistent:
+    """Rate limit is computed from send_log rows, so it survives restarts."""
+
+    def test_rate_limit_from_send_log(self, api, monkeypatch):
+        """check_send_allowed counts rows in send_log, not an in-memory dict."""
+        from clerk.models import Draft
+
+        draft = Draft(
+            draft_id="d1",
+            account="test",
+            to=[Address(addr="a@example.com")],
+            subject="s",
+            body_text="b",
+        )
+
+        # With rate_limit=2, three prior sends in the log should block.
+        monkeypatch.setattr(api.config.send, "rate_limit", 2)
+        for i in range(3):
+            api.cache.log_send(
+                account="test",
+                to=draft.to,
+                cc=[],
+                bcc=[],
+                subject=f"s{i}",
+                message_id=f"<m{i}@x>",
+            )
+
+        allowed, error = api.check_send_allowed(draft, "test")
+        assert allowed is False
+        assert "rate limit" in (error or "").lower()
+
+    def test_rate_limit_ignores_old_sends(self, api, monkeypatch):
+        """Sends older than 1 hour should not count toward the limit."""
+        import json
+        import sqlite3
+        from datetime import timedelta
+
+        from clerk.models import Draft
+
+        draft = Draft(
+            draft_id="d1",
+            account="test",
+            to=[Address(addr="a@example.com")],
+            subject="s",
+            body_text="b",
+        )
+        monkeypatch.setattr(api.config.send, "rate_limit", 2)
+
+        # Insert three sends with timestamps two hours ago.
+        old = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+        with sqlite3.connect(api.cache.db_path) as conn:
+            for i in range(3):
+                conn.execute(
+                    "INSERT INTO send_log (timestamp, account, to_json, cc_json, bcc_json, subject, message_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        old,
+                        "test",
+                        json.dumps([{"addr": "a@example.com", "name": ""}]),
+                        "[]",
+                        "[]",
+                        f"s{i}",
+                        f"<m{i}@x>",
+                    ),
+                )
+
+        allowed, error = api.check_send_allowed(draft, "test")
+        assert allowed is True, error
+
+
+class TestSetFlag:
+    """set_flag is the single flag-mutation entry point; wrappers delegate here."""
+
+    def test_mark_read_calls_set_flag(self, api, cache, sample_message, monkeypatch):
+        from clerk.models import MessageFlag
+
+        cache.store_message(sample_message)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        monkeypatch.setattr("clerk.api.get_imap_client", lambda _: mock_client)
+
+        api.mark_read("<msg123@example.com>")
+
+        args, _ = mock_client.add_flags.call_args
+        # add_flags(folder, message_id, [flag]) — flag should be SEEN.
+        assert MessageFlag.SEEN in args[2]
+
+    def test_unflag_removes_flagged(self, api, cache, sample_message, monkeypatch):
+        from clerk.models import MessageFlag
+
+        sample_message.flags = [MessageFlag.FLAGGED]
+        cache.store_message(sample_message)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        monkeypatch.setattr("clerk.api.get_imap_client", lambda _: mock_client)
+
+        api.unflag_message("<msg123@example.com>")
+
+        args, _ = mock_client.remove_flags.call_args
+        assert MessageFlag.FLAGGED in args[2]
+
+    def test_cache_write_failure_does_not_raise(self, api, cache, sample_message, monkeypatch):
+        """Server-first: IMAP call succeeded, cache failure is logged not raised."""
+        from clerk.models import MessageFlag
+
+        cache.store_message(sample_message)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        monkeypatch.setattr("clerk.api.get_imap_client", lambda _: mock_client)
+        monkeypatch.setattr(
+            cache, "update_flags", MagicMock(side_effect=RuntimeError("disk full"))
+        )
+
+        # Must not raise — the IMAP side already succeeded.
+        api.set_flag("<msg123@example.com>", MessageFlag.SEEN, True)
+
+
+class TestEnsureBody:
+    """M1: _ensure_body must not trust body_text=None if body_fetched_at is recent."""
+
+    def test_refetches_when_body_text_is_none_even_if_fresh(
+        self, api, cache, sample_message, monkeypatch
+    ):
+        """A prior fetch that stored body_text=None must trigger a re-fetch."""
+        # Simulate the bug condition: body_fetched_at is recent, body_text is None.
+        sample_message.body_text = None
+        sample_message.body_html = None
+        sample_message.body_fetched_at = datetime.now(UTC)
+        cache.store_message(sample_message)
+
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.fetch_message_body.return_value = ("recovered body", None)
+        monkeypatch.setattr("clerk.api.get_imap_client", lambda _: mock_client)
+
+        msg = api.get_message("<msg123@example.com>")
+
+        assert msg is not None
+        assert msg.body_text == "recovered body"
+        mock_client.fetch_message_body.assert_called_once()
+
+
 class TestGetApi:
     """Tests for the get_api singleton function."""
 

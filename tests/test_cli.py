@@ -72,10 +72,10 @@ class TestAccounts:
 
 
 class TestCacheCommands:
-    @patch("clerk.cli.get_cache")
-    def test_cache_status(self, mock_get_cache):
-        mock_cache = MagicMock()
-        mock_cache.get_stats.return_value = CacheStats(
+    @patch("clerk.cli.get_api")
+    def test_cache_status(self, mock_get_api):
+        mock_api = MagicMock()
+        mock_api.get_cache_stats.return_value = CacheStats(
             message_count=100,
             conversation_count=25,
             oldest_message=datetime(2025, 1, 1),
@@ -83,17 +83,17 @@ class TestCacheCommands:
             cache_size_bytes=1024 * 1024,
             last_sync=datetime(2025, 1, 3, 12, 0),
         )
-        mock_get_cache.return_value = mock_cache
+        mock_get_api.return_value = mock_api
 
         result = runner.invoke(app, ["cache", "status"])
         assert result.exit_code == 0
         assert "100" in result.stdout
         assert "25" in result.stdout
 
-    @patch("clerk.cli.get_cache")
-    def test_cache_status_json(self, mock_get_cache):
-        mock_cache = MagicMock()
-        mock_cache.get_stats.return_value = CacheStats(
+    @patch("clerk.cli.get_api")
+    def test_cache_status_json(self, mock_get_api):
+        mock_api = MagicMock()
+        mock_api.get_cache_stats.return_value = CacheStats(
             message_count=50,
             conversation_count=10,
             oldest_message=None,
@@ -101,23 +101,22 @@ class TestCacheCommands:
             cache_size_bytes=512,
             last_sync=None,
         )
-        mock_get_cache.return_value = mock_cache
+        mock_get_api.return_value = mock_api
 
         result = runner.invoke(app, ["cache", "status", "--json"])
         assert result.exit_code == 0
         data = json.loads(result.stdout)
         assert data["message_count"] == 50
 
-    @patch("clerk.cli.get_cache")
-    def test_cache_clear_cancelled(self, mock_get_cache):
-        mock_cache = MagicMock()
-        mock_get_cache.return_value = mock_cache
+    @patch("clerk.cli.get_api")
+    def test_cache_clear_cancelled(self, mock_get_api):
+        mock_api = MagicMock()
+        mock_get_api.return_value = mock_api
 
         # Simulate user typing "n" to cancel
         runner.invoke(app, ["cache", "clear"], input="n\n")
-        # When user cancels, confirm() aborts with exit code 1
-        # But the command might exit cleanly depending on typer version
-        mock_cache.clear.assert_not_called()
+        # When user cancels, confirm() aborts before clear is called.
+        mock_api.clear_cache.assert_not_called()
 
 
 class TestAccountsCommands:

@@ -9,7 +9,7 @@ import re
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from email.message import Message as EmailMessage
-from typing import Any
+from typing import Any, ClassVar
 
 from imapclient import IMAPClient  # type: ignore[import-untyped]
 
@@ -196,15 +196,19 @@ class ImapClient:
         self.config = account_config
         self._client: IMAPClient | None = None
 
+    # Hostnames for OAuth-authenticated IMAP providers.
+    _XOAUTH2_HOSTS: ClassVar[dict[str, str]] = {
+        "gmail": "imap.gmail.com",
+        "microsoft365": "outlook.office365.com",
+    }
+
     def connect(self) -> None:
         """Connect to the IMAP server."""
         if self._client is not None:
             return
 
-        if self.config.protocol == "gmail":
-            self._connect_gmail()
-        elif self.config.protocol == "microsoft365":
-            self._connect_microsoft365()
+        if self.config.protocol in self._XOAUTH2_HOSTS:
+            self._connect_xoauth2()
         else:
             self._connect_imap()
 
@@ -219,37 +223,34 @@ class ImapClient:
         password = self.config.get_password(self.account_name)
         self._client.login(imap.username, password)
 
-    def _connect_gmail(self) -> None:
-        """Connect to Gmail using OAuth2 XOAUTH2 authentication."""
-        from .oauth import get_gmail_credentials
+    def _get_xoauth2_token(self) -> str:
+        """Fetch an access token for the configured OAuth protocol."""
+        if self.config.protocol == "gmail":
+            from .oauth import get_gmail_credentials
 
-        oauth_config = self.config.oauth
-        if not oauth_config:
-            raise ValueError("OAuth configuration required for Gmail")
+            oauth_config = self.config.oauth
+            if not oauth_config:
+                raise ValueError("OAuth configuration required for Gmail")
+            credentials = get_gmail_credentials(
+                self.account_name,
+                client_id_file=oauth_config.client_id_file,
+            )
+            token = credentials.token
+            if not token:
+                raise ValueError("Gmail credentials have no access token — re-authenticate")
+            return str(token)
+        if self.config.protocol == "microsoft365":
+            from .microsoft365 import get_m365_access_token
 
-        # Get credentials, refreshing if needed
-        credentials = get_gmail_credentials(
-            self.account_name,
-            client_id_file=oauth_config.client_id_file,
-        )
+            return get_m365_access_token(self.account_name)
+        raise ValueError(f"Unsupported OAuth protocol: {self.config.protocol}")
 
-        # Connect to Gmail IMAP
-        self._client = IMAPClient("imap.gmail.com", port=993, ssl=True)
-
-        # Authenticate with XOAUTH2
-        email = self.config.from_.address
-        self._client.oauth2_login(email, credentials.token)
-
-    def _connect_microsoft365(self) -> None:
-        """Connect to Microsoft 365 using OAuth2 XOAUTH2 authentication."""
-        from .microsoft365 import get_m365_access_token
-
-        access_token = get_m365_access_token(self.account_name)
-
-        self._client = IMAPClient("outlook.office365.com", port=993, ssl=True)
-
-        email = self.config.from_.address
-        self._client.oauth2_login(email, access_token)
+    def _connect_xoauth2(self) -> None:
+        """Connect to an IMAP server using XOAUTH2 (Gmail and M365 share this path)."""
+        host = self._XOAUTH2_HOSTS[self.config.protocol]
+        token = self._get_xoauth2_token()
+        self._client = IMAPClient(host, port=993, ssl=True)
+        self._client.oauth2_login(self.config.from_.address, token)
 
     def disconnect(self) -> None:
         """Disconnect from the IMAP server."""

@@ -1,52 +1,31 @@
-"""MCP Server for clerk — 10 tools + 3 resources for LLM email agents."""
+"""MCP Server for clerk — 10 tools + 3 resources for LLM email agents.
 
+The MCP server is the primary interface. It is a thin adapter on top of
+``ClerkAPI``: every mutation goes through the API, every read uses
+``clerk_sql`` (readonly SQLite + FTS5). Two-step send confirmation is
+enforced here and persisted in the cache so it survives restarts.
+"""
+
+import asyncio
 import json
-import secrets
+import sys
 import time
 from datetime import UTC, datetime
 from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
 
-from .api import get_api
+from .api import SEND_TOKEN_TTL_SECONDS, format_draft_preview, get_api
 from .cache import SCHEMA
 from .config import ensure_dirs, get_config
-from .smtp_client import check_send_allowed, format_draft_preview, send_draft_async
+from .models import MessageFlag
 
-# Store pending M365 device code flows: account -> (app, flow, expires_at)
+# Pending M365 device code flows per account: (app, flow, expires_at).
+# In-memory is acceptable here: a device code has its own 15-minute server-side
+# expiry, and losing it just means the user restarts the flow.
 _pending_device_flows: dict[str, tuple[Any, Any, float]] = {}
 
 mcp = FastMCP(name="clerk")
-
-# Confirmation token storage
-_confirmation_tokens: dict[str, tuple[str, float]] = {}
-CONFIRMATION_TOKEN_EXPIRY_SECONDS = 300
-
-
-def _generate_confirmation_token(draft_id: str) -> str:
-    token = secrets.token_hex(16)
-    _confirmation_tokens[draft_id] = (token, time.time() + CONFIRMATION_TOKEN_EXPIRY_SECONDS)
-    return token
-
-
-def _validate_confirmation_token(draft_id: str, token: str) -> tuple[bool, str | None]:
-    if draft_id not in _confirmation_tokens:
-        return False, "No confirmation token found. Call clerk_send without token first."
-    stored_token, expiry = _confirmation_tokens[draft_id]
-    if time.time() > expiry:
-        del _confirmation_tokens[draft_id]
-        return False, "Confirmation token expired. Call clerk_send again to get a new one."
-    if not secrets.compare_digest(token, stored_token):
-        return False, "Invalid confirmation token."
-    del _confirmation_tokens[draft_id]
-    return True, None
-
-
-def _cleanup_expired_tokens() -> None:
-    now = time.time()
-    expired = [k for k, (_, exp) in _confirmation_tokens.items() if now > exp]
-    for k in expired:
-        del _confirmation_tokens[k]
 
 
 # ============================================================================
@@ -148,25 +127,12 @@ def clerk_sync(
     api = get_api()
 
     if account is not None:
-        # Single account mode
         try:
             return api.sync_folder(account=account, folder=folder, full=full)
         except Exception as e:
             return {"error": str(e)}
 
-    # Sync all accounts
-    config = get_config()
-    results: dict[str, Any] = {"accounts": {}, "total_synced": 0}
-
-    for acct_name in config.accounts:
-        try:
-            result = api.sync_folder(account=acct_name, folder=folder, full=full)
-            results["accounts"][acct_name] = result
-            results["total_synced"] += result["synced"]
-        except Exception as e:
-            results["accounts"][acct_name] = {"error": str(e)}
-
-    return results
+    return api.sync_all(folder=folder, full=full)
 
 
 @mcp.tool()
@@ -269,8 +235,12 @@ async def clerk_send(
 ) -> dict[str, Any]:
     """Send a draft email with two-step confirmation.
 
-    Step 1: Call without token — returns preview and a confirmation token.
+    Step 1: Call without token — returns a preview and a confirmation token.
     Step 2: Call with the token — actually sends the email.
+
+    Tokens are persisted (survive server restarts) and bound to the draft's
+    content: if the draft is edited between step 1 and step 2, the token
+    is invalidated and step 2 will require a fresh preview.
 
     Args:
         draft_id: ID of the draft to send
@@ -281,7 +251,6 @@ async def clerk_send(
         Step 2: Send result with message_id
     """
     ensure_dirs()
-    _cleanup_expired_tokens()
     api = get_api()
 
     draft = api.get_draft(draft_id)
@@ -290,26 +259,26 @@ async def clerk_send(
 
     if token is None:
         # Step 1: generate preview and token
-        allowed, error = check_send_allowed(draft, draft.account)
+        allowed, error = api.check_send_allowed(draft, draft.account)
         if not allowed:
             return {"error": error}
 
-        confirmation_token = _generate_confirmation_token(draft_id)
+        confirmation_token = api.generate_send_token(draft)
 
         return {
             "status": "pending_confirmation",
             "preview": format_draft_preview(draft),
             "token": confirmation_token,
-            "expires_in_seconds": CONFIRMATION_TOKEN_EXPIRY_SECONDS,
+            "expires_in_seconds": SEND_TOKEN_TTL_SECONDS,
             "message": "Call clerk_send again with this token to send.",
         }
 
     # Step 2: validate and send
-    valid, error = _validate_confirmation_token(draft_id, token)
+    valid, error = api.consume_send_token(draft, token)
     if not valid:
         return {"error": error}
 
-    result = await send_draft_async(draft_id)
+    result = await api.send_draft_async(draft_id)
 
     if result.success:
         return {
@@ -349,6 +318,15 @@ def clerk_move(
         return {"error": str(e)}
 
 
+# Dispatch table for clerk_flag: maps action keyword to (flag, on).
+_FLAG_ACTIONS: dict[str, tuple[MessageFlag, bool]] = {
+    "read": (MessageFlag.SEEN, True),
+    "unread": (MessageFlag.SEEN, False),
+    "flag": (MessageFlag.FLAGGED, True),
+    "unflag": (MessageFlag.FLAGGED, False),
+}
+
+
 @mcp.tool()
 def clerk_flag(
     message_id: str,
@@ -367,17 +345,14 @@ def clerk_flag(
     """
     ensure_dirs()
     api = get_api()
+
+    mapping = _FLAG_ACTIONS.get(action)
+    if mapping is None:
+        return {"error": f"Invalid action: {action}. Use flag, unflag, read, or unread."}
+
+    flag, on = mapping
     try:
-        if action == "flag":
-            api.flag_message(message_id, account=account)
-        elif action == "unflag":
-            api.unflag_message(message_id, account=account)
-        elif action == "read":
-            api.mark_read(message_id, account=account)
-        elif action == "unread":
-            api.mark_unread(message_id, account=account)
-        else:
-            return {"error": f"Invalid action: {action}. Use flag, unflag, read, or unread."}
+        api.set_flag(message_id, flag, on, account=account)
         return {"status": "success", "message_id": message_id, "action": action}
     except Exception as e:
         return {"error": str(e)}
@@ -434,33 +409,47 @@ async def clerk_auth(
 
     if protocol == "microsoft365":
         return await _auth_m365(account, confirm)
-    elif protocol == "gmail":
+    if protocol == "gmail":
         return _auth_gmail(account, acct_config)
-    else:
-        return _auth_imap(account, acct_config, password)
+    return _auth_imap(account, acct_config, password)
 
 
 async def _auth_m365(account: str, confirm: bool) -> dict[str, Any]:
     """Handle M365 device code auth flow."""
-    import asyncio
-
     from .microsoft365 import M365_SCOPES, _build_app, save_m365_token_cache
 
-    # Clean up expired flows
+    # Clean up expired flows first.
     now = time.time()
     expired = [k for k, (_, _, exp) in _pending_device_flows.items() if now > exp]
     for k in expired:
         del _pending_device_flows[k]
 
     if not confirm:
-        # Step 1: Initiate device code flow
+        # Reject a second step-1 for the same account while one is still live.
+        # Prevents two concurrent callers from stomping each other's flow state.
+        if account in _pending_device_flows:
+            _, _, prior_expires = _pending_device_flows[account]
+            if now < prior_expires:
+                remaining = max(0, int(prior_expires - now))
+                return {
+                    "status": "awaiting_user",
+                    "error": (
+                        f"Auth flow already in progress for '{account}'. "
+                        f"Complete it in the browser and call clerk_auth with "
+                        f"confirm=True, or wait {remaining}s for it to expire "
+                        f"before starting a new one."
+                    ),
+                }
+
         app = _build_app(account)
         flow = app.initiate_device_flow(scopes=M365_SCOPES)
 
         if "error" in flow:
-            return {"error": f"Failed to initiate auth: {flow.get('error_description', flow['error'])}"}
+            return {
+                "error": "Failed to initiate authentication. Please check "
+                "your network and try again."
+            }
 
-        # Store for step 2 (device codes expire in ~15 min)
         expires_at = now + flow.get("expires_in", 900)
         _pending_device_flows[account] = (app, flow, expires_at)
 
@@ -483,9 +472,16 @@ async def _auth_m365(account: str, confirm: bool) -> dict[str, Any]:
     result = await asyncio.to_thread(app.acquire_token_by_device_flow, flow)
 
     if "error" in result:
+        # Log details but return a sanitized message — MSAL error payloads
+        # can include raw server responses.
+        print(
+            f"M365 auth failure for '{account}': "
+            f"{result.get('error')}: {result.get('error_description', '')}",
+            file=sys.stderr,
+        )
         return {
             "status": "failed",
-            "error": f"Authentication failed: {result.get('error_description', result['error'])}",
+            "error": "Authentication failed. Please retry clerk_auth.",
         }
 
     save_m365_token_cache(account, app.token_cache.serialize())
@@ -536,11 +532,16 @@ def _auth_gmail(account: str, acct_config: Any) -> dict[str, Any]:
                 "message": f"Gmail account '{account}' token refreshed successfully.",
             }
         except Exception as e:
+            # Log the detail, return a clean message to the LLM.
+            print(
+                f"Gmail token refresh failed for '{account}': {e}",
+                file=sys.stderr,
+            )
             return {
                 "status": "manual_required",
                 "protocol": "gmail",
                 "message": (
-                    f"Token refresh failed: {e}. "
+                    f"Token refresh failed for '{account}'. "
                     "Ask the user to run: clerk accounts auth " + account
                 ),
             }
@@ -570,10 +571,8 @@ def _auth_imap(account: str, acct_config: Any, password: str | None) -> dict[str
             ),
         }
 
-    # Save the new password
     save_password(account, password)
 
-    # Test the connection
     try:
         client = ImapClient(account, acct_config)
         client.connect()
@@ -585,11 +584,19 @@ def _auth_imap(account: str, acct_config: Any, password: str | None) -> dict[str
             "message": f"Password updated and connection verified ({folder_count} folders).",
         }
     except Exception as e:
+        # Connection errors from IMAP libraries occasionally echo credentials
+        # or server banners. Log internally, return a canned message.
+        print(
+            f"IMAP connection test failed for '{account}': {e}",
+            file=sys.stderr,
+        )
         return {
             "status": "failed",
             "protocol": "imap",
-            "error": f"Password saved but connection failed: {e}",
-            "message": "The password was saved to keyring but the connection test failed. Check the credentials.",
+            "error": (
+                "Password saved, but the connection test failed. "
+                "Verify the password, IMAP host, and port."
+            ),
         }
 
 
