@@ -197,8 +197,24 @@ class Cache:
         return "uid" not in cols
 
     def _migrate_v1_to_v2(self, conn: sqlite3.Connection) -> None:
-        """Filled in by Task 5."""
-        raise NotImplementedError
+        """Rebuild the derivable cache; preserve drafts and send_log.
+
+        messages/messages_fts are reconstructible from the server, so we drop
+        and let _ensure_schema recreate them in the v2 shape; sync_state is
+        reset so the next sync is a full re-sync. drafts (unsent work) and
+        send_log (audit trail) are kept; send_log gains a 'status' column.
+        """
+        # Drop the derivable tables (dropping messages also drops its triggers).
+        conn.execute("DROP TABLE IF EXISTS messages")
+        conn.execute("DROP TABLE IF EXISTS messages_fts")
+        conn.execute("DELETE FROM sync_state")
+
+        # Preserve send_log; add the status column if missing.
+        sl_cols = {r[1] for r in conn.execute("PRAGMA table_info(send_log)")}
+        if "status" not in sl_cols:
+            conn.execute(
+                "ALTER TABLE send_log ADD COLUMN status TEXT NOT NULL DEFAULT 'sent'"
+            )
 
     def _row_to_message(self, row: sqlite3.Row) -> Message:
         """Convert a database row to a Message object."""
