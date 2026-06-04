@@ -1,5 +1,6 @@
 """Core data models for clerk."""
 
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from enum import Enum
 
@@ -14,6 +15,30 @@ class MessageFlag(str, Enum):
     FLAGGED = "flagged"
     DELETED = "deleted"
     DRAFT = "draft"
+
+
+# Bit values for the cache's INTEGER flags column. Kept adjacent to
+# MessageFlag so the mapping is derived from one source of truth.
+_FLAG_BITS: dict[MessageFlag, int] = {
+    MessageFlag.SEEN: 1,
+    MessageFlag.ANSWERED: 2,
+    MessageFlag.FLAGGED: 4,
+    MessageFlag.DELETED: 8,
+    MessageFlag.DRAFT: 16,
+}
+
+
+def flags_to_bitmask(flags: Iterable[MessageFlag]) -> int:
+    """Pack model flags into the cache's INTEGER bitmask column."""
+    mask = 0
+    for flag in flags:
+        mask |= _FLAG_BITS.get(flag, 0)
+    return mask
+
+
+def bitmask_to_flags(mask: int) -> list[MessageFlag]:
+    """Unpack the cache's INTEGER bitmask column into model flags."""
+    return [flag for flag, bit in _FLAG_BITS.items() if mask & bit]
 
 
 class Address(BaseModel):
@@ -43,6 +68,9 @@ class Message(BaseModel):
     conv_id: str = Field(description="Conversation/thread ID")
     folder: str = Field(default="INBOX", description="IMAP folder name")
     account: str = Field(default="", description="Account name if multi-account")
+    uid: int | None = Field(
+        default=None, description="Server IMAP UID within (account, folder)"
+    )
 
     from_: Address = Field(alias="from", description="Sender address")
     to: list[Address] = Field(default_factory=list)

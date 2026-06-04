@@ -11,6 +11,44 @@ from clerk.models import (
     Message,
     MessageFlag,
 )
+from clerk.models import (
+    MessageFlag,
+    flags_to_bitmask,
+    bitmask_to_flags,
+)
+
+
+def test_flags_to_bitmask_known_values():
+    assert flags_to_bitmask([]) == 0
+    assert flags_to_bitmask([MessageFlag.SEEN]) == 1
+    assert flags_to_bitmask([MessageFlag.ANSWERED]) == 2
+    assert flags_to_bitmask([MessageFlag.FLAGGED]) == 4
+    assert flags_to_bitmask([MessageFlag.DELETED]) == 8
+    assert flags_to_bitmask([MessageFlag.DRAFT]) == 16
+    assert flags_to_bitmask([MessageFlag.SEEN, MessageFlag.FLAGGED]) == 5
+
+
+def test_bitmask_roundtrip():
+    flags = [MessageFlag.SEEN, MessageFlag.ANSWERED, MessageFlag.DELETED]
+    assert set(bitmask_to_flags(flags_to_bitmask(flags))) == set(flags)
+
+
+def test_bitmask_to_flags_zero_is_empty():
+    assert bitmask_to_flags(0) == []
+
+
+def test_message_carries_uid():
+    from datetime import datetime
+    from clerk.models import Message, Address
+
+    msg = Message(
+        message_id="<a@b>",
+        conv_id="abc123",
+        **{"from": Address(addr="x@y.com")},
+        date=datetime(2026, 1, 1),
+        uid=42,
+    )
+    assert msg.uid == 42
 
 
 class TestAddress:
