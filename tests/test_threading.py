@@ -8,6 +8,7 @@ from clerk.threading import (
     compute_conv_id,
     compute_root_id,
     group_by_subject,
+    normalize_subject,
     thread_messages,
 )
 
@@ -95,6 +96,14 @@ class TestNormalizeSubject:
 
     def test_empty_string(self):
         assert _normalize_subject("") == ""
+
+
+def test_normalize_subject_strips_prefixes():
+    assert normalize_subject("Re: Budget") == "Budget"
+    assert normalize_subject("RE: re: Fwd: Budget") == "Budget"
+    assert normalize_subject("Fw: Hello") == "Hello"
+    assert normalize_subject("Plain subject") == "Plain subject"
+    assert normalize_subject("   spaced   ") == "spaced"
 
 
 class TestThreadMessages:

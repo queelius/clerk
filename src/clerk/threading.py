@@ -178,6 +178,15 @@ def _collect_messages(node: ThreadNode, messages: list[Message]) -> None:
         _collect_messages(child, messages)
 
 
+def normalize_subject(subject: str) -> str:
+    """Public: normalize a subject by removing Re:/Fwd: prefixes.
+
+    Used by the cache to persist a canonical per-thread subject so listings
+    do not show an arbitrary Re:-prefixed variant.
+    """
+    return _normalize_subject(subject)
+
+
 def _normalize_subject(subject: str) -> str:
     """Normalize subject by removing Re:/Fwd: prefixes."""
     import re
