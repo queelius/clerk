@@ -18,19 +18,28 @@ from .models import (
     ConversationSummary,
     Message,
     MessageFlag,
+    bitmask_to_flags,
+    flags_to_bitmask,
 )
+from .threading import compute_root_id, normalize_subject
 
 # Conversation IDs are 12-hex SHA256 prefixes. Validate caller-supplied
 # prefixes so they cannot inject SQL LIKE wildcards (%, _, \).
 _CONV_ID_PREFIX_RE = re.compile(r"^[0-9a-f]{1,12}$")
 
+SCHEMA_VERSION = 2
+
 SCHEMA = """
--- Core message storage
+-- Core message storage. Identity is the server-truthful (account, folder, uid).
 CREATE TABLE IF NOT EXISTS messages (
-    message_id TEXT PRIMARY KEY,
-    conv_id TEXT NOT NULL,
     account TEXT NOT NULL,
     folder TEXT NOT NULL,
+    uid INTEGER NOT NULL,
+
+    message_id TEXT,
+    conv_id TEXT NOT NULL,
+    root_message_id TEXT,
+    thread_subject TEXT DEFAULT '',
 
     from_addr TEXT NOT NULL,
     from_name TEXT DEFAULT '',
@@ -43,15 +52,18 @@ CREATE TABLE IF NOT EXISTS messages (
 
     body_text TEXT,
     body_html TEXT,
+    body_skipped INTEGER NOT NULL DEFAULT 0,
 
-    flags TEXT DEFAULT '[]',
+    flags INTEGER NOT NULL DEFAULT 0,
     attachments_json TEXT DEFAULT '[]',
 
     in_reply_to TEXT,
     references_json TEXT DEFAULT '[]',
 
     headers_fetched_at TEXT NOT NULL,
-    body_fetched_at TEXT
+    body_fetched_at TEXT,
+
+    PRIMARY KEY (account, folder, uid)
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conv_id);
@@ -59,6 +71,8 @@ CREATE INDEX IF NOT EXISTS idx_messages_date ON messages(date_utc DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_from ON messages(from_addr);
 CREATE INDEX IF NOT EXISTS idx_messages_folder ON messages(folder);
 CREATE INDEX IF NOT EXISTS idx_messages_account ON messages(account);
+CREATE INDEX IF NOT EXISTS idx_messages_message_id ON messages(message_id);
+CREATE INDEX IF NOT EXISTS idx_messages_flags ON messages(flags);
 
 -- Full-text search on cached content
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
@@ -134,7 +148,8 @@ CREATE TABLE IF NOT EXISTS send_log (
     cc_json TEXT DEFAULT '[]',
     bcc_json TEXT DEFAULT '[]',
     subject TEXT NOT NULL,
-    message_id TEXT
+    message_id TEXT,
+    status TEXT NOT NULL DEFAULT 'sent'
 );
 """
 
@@ -149,25 +164,46 @@ class Cache:
         self._ensure_schema()
 
     def _ensure_schema(self) -> None:
-        """Create database schema if not exists."""
+        """Create schema if absent; migrate a legacy (v1) cache to v2."""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            if version < SCHEMA_VERSION and self._is_legacy_v1(conn):
+                self._migrate_v1_to_v2(conn)
             conn.executescript(SCHEMA)
+            conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
-        """Context manager for database connections."""
-        conn = sqlite3.connect(self.db_path)
+        """Context manager for database connections (WAL, 5s busy timeout)."""
+        conn = sqlite3.connect(self.db_path, timeout=5.0)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
         try:
             yield conn
             conn.commit()
         finally:
             conn.close()
 
+    def _is_legacy_v1(self, conn: sqlite3.Connection) -> bool:
+        """A pre-v2 cache: a messages table exists but lacks the uid column."""
+        row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'"
+        ).fetchone()
+        if not row:
+            return False
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(messages)")}
+        return "uid" not in cols
+
+    def _migrate_v1_to_v2(self, conn: sqlite3.Connection) -> None:
+        """Filled in by Task 5."""
+        raise NotImplementedError
+
     def _row_to_message(self, row: sqlite3.Row) -> Message:
         """Convert a database row to a Message object."""
         return Message(
+            uid=row["uid"],
             message_id=row["message_id"],
             conv_id=row["conv_id"],
             account=row["account"],
@@ -180,7 +216,7 @@ class Cache:
             date=datetime.fromisoformat(row["date_utc"]),
             body_text=row["body_text"],
             body_html=row["body_html"],
-            flags=[MessageFlag(f) for f in json.loads(row["flags"])],
+            flags=bitmask_to_flags(row["flags"]),
             attachments=[Attachment(**a) for a in json.loads(row["attachments_json"])],
             in_reply_to=row["in_reply_to"],
             references=json.loads(row["references_json"]),
@@ -193,23 +229,60 @@ class Cache:
         )
 
     def store_message(self, msg: Message) -> None:
-        """Store or update a message in the cache."""
+        """Store or update a message, keyed on (account, folder, uid).
+
+        Body-preserving upsert: a header-only re-sync (body_text/html None)
+        updates headers/flags/folder but keeps any body already fetched.
+        """
+        if msg.uid is None:
+            raise ValueError("store_message requires msg.uid (the server UID)")
+
+        root_message_id = compute_root_id(
+            msg.message_id, msg.references, msg.in_reply_to
+        )
+        thread_subject = normalize_subject(msg.subject) if msg.subject else ""
+
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT OR REPLACE INTO messages (
-                    message_id, conv_id, account, folder,
+                INSERT INTO messages (
+                    account, folder, uid,
+                    message_id, conv_id, root_message_id, thread_subject,
                     from_addr, from_name, to_json, cc_json, reply_to_json,
-                    subject, date_utc, body_text, body_html,
+                    subject, date_utc, body_text, body_html, body_skipped,
                     flags, attachments_json, in_reply_to, references_json,
                     headers_fetched_at, body_fetched_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(account, folder, uid) DO UPDATE SET
+                    message_id=excluded.message_id,
+                    conv_id=excluded.conv_id,
+                    root_message_id=excluded.root_message_id,
+                    thread_subject=excluded.thread_subject,
+                    from_addr=excluded.from_addr,
+                    from_name=excluded.from_name,
+                    to_json=excluded.to_json,
+                    cc_json=excluded.cc_json,
+                    reply_to_json=excluded.reply_to_json,
+                    subject=excluded.subject,
+                    date_utc=excluded.date_utc,
+                    body_text=COALESCE(excluded.body_text, messages.body_text),
+                    body_html=COALESCE(excluded.body_html, messages.body_html),
+                    body_skipped=excluded.body_skipped,
+                    flags=excluded.flags,
+                    attachments_json=excluded.attachments_json,
+                    in_reply_to=excluded.in_reply_to,
+                    references_json=excluded.references_json,
+                    headers_fetched_at=excluded.headers_fetched_at,
+                    body_fetched_at=COALESCE(excluded.body_fetched_at, messages.body_fetched_at)
                 """,
                 (
-                    msg.message_id,
-                    msg.conv_id,
                     msg.account,
                     msg.folder,
+                    msg.uid,
+                    msg.message_id,
+                    msg.conv_id,
+                    root_message_id,
+                    thread_subject,
                     msg.from_.addr,
                     msg.from_.name,
                     json.dumps([a.model_dump() for a in msg.to]),
@@ -219,7 +292,8 @@ class Cache:
                     msg.date.isoformat(),
                     msg.body_text,
                     msg.body_html,
-                    json.dumps([f.value for f in msg.flags]),
+                    0,
+                    flags_to_bitmask(msg.flags),
                     json.dumps([a.model_dump() for a in msg.attachments]),
                     msg.in_reply_to,
                     json.dumps(msg.references),
@@ -264,9 +338,9 @@ class Cache:
                 SELECT
                     conv_id,
                     MAX(date_utc) as latest_date,
-                    MIN(subject) as subject,
+                    MIN(thread_subject) as subject,
                     COUNT(*) as message_count,
-                    SUM(CASE WHEN flags NOT LIKE '%"seen"%' THEN 1 ELSE 0 END) as unread_count,
+                    SUM(CASE WHEN flags & 1 = 0 THEN 1 ELSE 0 END) as unread_count,
                     GROUP_CONCAT(DISTINCT from_addr) as participants,
                     (SELECT body_text FROM messages m2
                      WHERE m2.conv_id = messages.conv_id
@@ -383,9 +457,9 @@ class Cache:
                 SELECT
                     conv_id,
                     MAX(date_utc) as latest_date,
-                    MIN(subject) as subject,
+                    MIN(thread_subject) as subject,
                     COUNT(*) as message_count,
-                    SUM(CASE WHEN flags NOT LIKE '%"seen"%' THEN 1 ELSE 0 END) as unread_count,
+                    SUM(CASE WHEN flags & 1 = 0 THEN 1 ELSE 0 END) as unread_count,
                     GROUP_CONCAT(DISTINCT from_addr) as participants,
                     (SELECT body_text FROM messages m2
                      WHERE m2.conv_id = messages.conv_id
@@ -477,11 +551,11 @@ class Cache:
             conn.close()
 
     def update_flags(self, message_id: str, flags: Sequence[MessageFlag]) -> None:
-        """Update message flags."""
+        """Update message flags (stored as an INTEGER bitmask)."""
         with self._connect() as conn:
             conn.execute(
                 "UPDATE messages SET flags = ? WHERE message_id = ?",
-                (json.dumps([f.value for f in flags]), message_id),
+                (flags_to_bitmask(flags), message_id),
             )
 
     def update_body(

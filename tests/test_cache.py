@@ -19,6 +19,7 @@ def cache(tmp_path):
 def sample_message():
     """Create a sample message for testing."""
     return Message(
+        uid=1,
         message_id="<test123@example.com>",
         conv_id="conv_abc123",
         account="test_account",
@@ -70,6 +71,7 @@ class TestCacheConversations:
         # Create messages in a conversation
         conv_id = "conv_thread123"
         msg1 = Message(
+            uid=1,
             message_id="<msg1@example.com>",
             conv_id=conv_id,
             account="test",
@@ -82,6 +84,7 @@ class TestCacheConversations:
             headers_fetched_at=datetime.now(UTC),
         )
         msg2 = Message(
+            uid=2,
             message_id="<msg2@example.com>",
             conv_id=conv_id,
             account="test",
@@ -116,6 +119,7 @@ class TestCacheConversations:
         # Create multiple conversations
         for i in range(3):
             msg = Message(
+                uid=i + 1,
                 message_id=f"<msg{i}@example.com>",
                 conv_id=f"conv_{i}",
                 account="test",
@@ -137,6 +141,7 @@ class TestCacheConversations:
     def test_list_unread_only(self, cache):
         # Create read and unread messages
         msg_read = Message(
+            uid=1,
             message_id="<read@example.com>",
             conv_id="conv_read",
             account="test",
@@ -147,6 +152,7 @@ class TestCacheConversations:
             headers_fetched_at=datetime.now(UTC),
         )
         msg_unread = Message(
+            uid=2,
             message_id="<unread@example.com>",
             conv_id="conv_unread",
             account="test",
@@ -182,6 +188,7 @@ class TestCacheFlags:
 class TestCacheBody:
     def test_update_body(self, cache):
         msg = Message(
+            uid=1,
             message_id="<test@example.com>",
             conv_id="conv1",
             account="test",
@@ -214,6 +221,7 @@ class TestCacheFreshness:
 class TestCachePruning:
     def test_prune_old_messages(self, cache):
         old_msg = Message(
+            uid=1,
             message_id="<old@example.com>",
             conv_id="conv_old",
             account="test",
@@ -223,6 +231,7 @@ class TestCachePruning:
             headers_fetched_at=datetime.now(UTC),
         )
         new_msg = Message(
+            uid=2,
             message_id="<new@example.com>",
             conv_id="conv_new",
             account="test",
@@ -268,6 +277,7 @@ class TestPrefixMatching:
     def test_find_conversations_by_prefix_single_match(self, cache):
         """Prefix that matches one conversation returns that conversation."""
         msg = Message(
+            uid=1,
             message_id="<test@example.com>",
             conv_id="abc123def456",
             account="test",
@@ -290,6 +300,7 @@ class TestPrefixMatching:
         """Prefix that matches multiple conversations returns all of them."""
         # Create two conversations with similar prefixes
         msg1 = Message(
+            uid=1,
             message_id="<msg1@example.com>",
             conv_id="abc123xxx",
             account="test",
@@ -301,6 +312,7 @@ class TestPrefixMatching:
             headers_fetched_at=datetime.now(UTC),
         )
         msg2 = Message(
+            uid=2,
             message_id="<msg2@example.com>",
             conv_id="abc456yyy",
             account="test",
@@ -325,6 +337,7 @@ class TestPrefixMatching:
     def test_find_conversations_by_prefix_no_matches(self, cache):
         """Prefix that matches no conversations returns empty list."""
         msg = Message(
+            uid=1,
             message_id="<test@example.com>",
             conv_id="abc123",
             account="test",
@@ -342,6 +355,7 @@ class TestPrefixMatching:
     def test_find_conversations_by_prefix_short_prefix(self, cache):
         """Even single-character prefixes work."""
         msg1 = Message(
+            uid=1,
             message_id="<msg1@example.com>",
             conv_id="a12345",
             account="test",
@@ -352,6 +366,7 @@ class TestPrefixMatching:
             headers_fetched_at=datetime.now(UTC),
         )
         msg2 = Message(
+            uid=2,
             message_id="<msg2@example.com>",
             conv_id="b67890",
             account="test",
@@ -374,6 +389,7 @@ class TestPrefixMatching:
         """get_conversation returns conversation for unique prefix."""
         # Conv IDs are always 12 hex chars in production.
         msg = Message(
+            uid=1,
             message_id="<test@example.com>",
             conv_id="abcdef123456",
             account="test",
@@ -396,6 +412,7 @@ class TestPrefixMatching:
     def test_get_conversation_ambiguous_prefix_returns_none(self, cache):
         """get_conversation returns None for ambiguous prefix."""
         msg1 = Message(
+            uid=1,
             message_id="<msg1@example.com>",
             conv_id="aaaabbb11111",
             account="test",
@@ -406,6 +423,7 @@ class TestPrefixMatching:
             headers_fetched_at=datetime.now(UTC),
         )
         msg2 = Message(
+            uid=2,
             message_id="<msg2@example.com>",
             conv_id="aaaabbb22222",
             account="test",
@@ -435,6 +453,7 @@ class TestPrefixMatching:
     def test_prefix_rejects_non_hex(self, cache):
         """Caller-supplied prefixes with non-hex chars (e.g. SQL wildcards) return empty."""
         msg = Message(
+            uid=1,
             message_id="<test@example.com>",
             conv_id="abcdef123456",
             account="test",
@@ -456,6 +475,7 @@ class TestPrefixMatching:
     def test_get_conversation_exact_match(self, cache):
         """get_conversation exact match takes precedence."""
         msg = Message(
+            uid=1,
             message_id="<test@example.com>",
             conv_id="exact",
             account="test",
@@ -476,6 +496,7 @@ class TestPrefixMatching:
     def test_get_conversation_no_match(self, cache):
         """get_conversation returns None for no match."""
         msg = Message(
+            uid=1,
             message_id="<test@example.com>",
             conv_id="abc123",
             account="test",
@@ -493,6 +514,7 @@ class TestPrefixMatching:
     def test_find_conversations_includes_summary_fields(self, cache):
         """find_conversations_by_prefix returns complete summary data."""
         msg1 = Message(
+            uid=1,
             message_id="<msg1@example.com>",
             conv_id="ccc0bbb13579",
             account="test_account",
@@ -505,6 +527,7 @@ class TestPrefixMatching:
             headers_fetched_at=datetime.now(UTC),
         )
         msg2 = Message(
+            uid=2,
             message_id="<msg2@example.com>",
             conv_id="ccc0bbb13579",
             account="test_account",
@@ -562,3 +585,108 @@ class TestSyncState:
         cache.set_sync_state("test", "Sent", last_uid=20)
         assert cache.get_sync_state("test", "INBOX")["last_uid"] == 10
         assert cache.get_sync_state("test", "Sent")["last_uid"] == 20
+
+
+# ---------------------------------------------------------------------------
+# Task 4: schema v2 tests - UID identity, bitmask flags, body-preserving upsert
+# ---------------------------------------------------------------------------
+
+
+def _msg(uid, message_id, *, body_text=None, body_html=None, subject="Re: Budget",
+         flags=None, conv_id="aa11bb22cc33", references=None, in_reply_to=None):
+    return Message(
+        uid=uid,
+        message_id=message_id,
+        conv_id=conv_id,
+        account="acct",
+        folder="INBOX",
+        **{"from": Address(addr="boss@work.com", name="Boss")},
+        date=datetime(2026, 1, 1, tzinfo=UTC),
+        subject=subject,
+        body_text=body_text,
+        body_html=body_html,
+        flags=flags or [],
+        references=references or [],
+        in_reply_to=in_reply_to,
+        headers_fetched_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+
+def test_store_and_get_roundtrip_with_uid_and_flags(tmp_path):
+    cache = Cache(db_path=tmp_path / "c.db")
+    cache.store_message(_msg(10, "<m10@x>", body_text="hi", flags=[MessageFlag.SEEN]))
+    got = cache.get_message("<m10@x>")
+    assert got is not None
+    assert got.uid == 10
+    assert MessageFlag.SEEN in got.flags
+    assert got.body_text == "hi"
+
+
+def test_flags_stored_as_integer_bitmask(tmp_path):
+    cache = Cache(db_path=tmp_path / "c.db")
+    cache.store_message(_msg(11, "<m11@x>", flags=[MessageFlag.SEEN, MessageFlag.FLAGGED]))
+    with cache._connect() as conn:
+        row = conn.execute("SELECT flags FROM messages WHERE uid = 11").fetchone()
+    assert row["flags"] == 5  # SEEN(1) | FLAGGED(4)
+
+
+def test_thread_subject_persisted_normalized(tmp_path):
+    cache = Cache(db_path=tmp_path / "c.db")
+    cache.store_message(_msg(12, "<m12@x>", subject="Re: Fwd: Budget"))
+    with cache._connect() as conn:
+        row = conn.execute("SELECT thread_subject FROM messages WHERE uid = 12").fetchone()
+    assert row["thread_subject"] == "Budget"
+
+
+def test_header_resync_preserves_existing_body(tmp_path):
+    cache = Cache(db_path=tmp_path / "c.db")
+    cache.store_message(_msg(13, "<m13@x>", body_text="full body"))
+    cache.store_message(_msg(13, "<m13@x>", body_text=None, flags=[MessageFlag.SEEN]))
+    got = cache.get_message("<m13@x>")
+    assert got.body_text == "full body"
+    assert MessageFlag.SEEN in got.flags
+
+
+def test_wal_mode_enabled(tmp_path):
+    cache = Cache(db_path=tmp_path / "c.db")
+    with cache._connect() as conn:
+        mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+    assert mode.lower() == "wal"
+
+
+def test_fresh_db_has_user_version_2(tmp_path):
+    cache = Cache(db_path=tmp_path / "c.db")
+    with cache._connect() as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+
+
+# ---------------------------------------------------------------------------
+# Task 6: bitmask unread predicate and canonical thread_subject in listings
+# ---------------------------------------------------------------------------
+
+
+def test_list_conversations_unread_uses_bitmask(tmp_path):
+    cache = Cache(db_path=tmp_path / "c.db")
+    cache.store_message(_msg(20, "<u1@x>", conv_id="ff00ff00ff00", flags=[]))
+    cache.store_message(_msg(21, "<u2@x>", conv_id="ee11ee11ee11",
+                             flags=[MessageFlag.SEEN]))
+    summaries = cache.list_conversations(account="acct", unread_only=True)
+    conv_ids = {s.conv_id for s in summaries}
+    assert "ff00ff00ff00" in conv_ids
+    assert "ee11ee11ee11" not in conv_ids
+
+
+def test_listing_subject_is_canonical(tmp_path):
+    cache = Cache(db_path=tmp_path / "c.db")
+    cache.store_message(_msg(22, "<c1@x>", conv_id="abcabcabcabc", subject="Re: Budget"))
+    summaries = cache.list_conversations(account="acct")
+    match = next(s for s in summaries if s.conv_id == "abcabcabcabc")
+    assert match.subject == "Budget"
+
+
+def test_update_flags_writes_bitmask(tmp_path):
+    cache = Cache(db_path=tmp_path / "c.db")
+    cache.store_message(_msg(23, "<f1@x>", flags=[]))
+    cache.update_flags("<f1@x>", [MessageFlag.SEEN, MessageFlag.ANSWERED])
+    with cache._connect() as conn:
+        assert conn.execute("SELECT flags FROM messages WHERE uid = 23").fetchone()["flags"] == 3

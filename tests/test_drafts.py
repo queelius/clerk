@@ -69,6 +69,7 @@ class TestDraftManager:
 
         # Store a message in the draft manager's cache
         msg = Message(
+            uid=1,
             message_id="<original@example.com>",
             conv_id="conv123",
             account="test",

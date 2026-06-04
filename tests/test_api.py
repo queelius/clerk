@@ -46,6 +46,7 @@ def draft_manager(tmp_path, cache, monkeypatch):
 def sample_message():
     """Create a sample message."""
     return Message(
+        uid=1,
         message_id="<msg123@example.com>",
         conv_id="conv123",
         account="test",
@@ -508,6 +509,7 @@ class TestSyncFolder:
     def test_incremental_sync_updates_sync_state(self, api, cache, monkeypatch):
         """Sync should update the last_uid in sync_state."""
         msg = Message(
+            uid=1,
             message_id="<msg1@example.com>",
             conv_id="abc123",
             account="test",

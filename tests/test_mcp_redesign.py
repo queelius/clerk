@@ -24,6 +24,7 @@ def populated_cache(tmp_path):
     """Create a cache with test messages."""
     cache = Cache(tmp_path / "test.db")
     msg1 = Message(
+        uid=1,
         message_id="<msg1@example.com>",
         conv_id="conv001",
         account="test",
@@ -36,6 +37,7 @@ def populated_cache(tmp_path):
         flags=[],
     )
     msg2 = Message(
+        uid=2,
         message_id="<msg2@example.com>",
         conv_id="conv001",
         account="test",

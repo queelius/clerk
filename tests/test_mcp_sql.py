@@ -13,6 +13,7 @@ def populated_cache(tmp_path):
     """Create a cache with test data."""
     cache = Cache(tmp_path / "test.db")
     msg = Message(
+        uid=1,
         message_id="<test1@example.com>",
         conv_id="abc123def456",
         account="test",
@@ -141,6 +142,7 @@ class TestExecuteReadonlySql:
         """Even if the user's SQL has LIMIT, the caller's limit wins."""
         # Insert a second message so we can observe the cap working.
         msg2 = Message(
+            uid=2,
             message_id="<test2@example.com>",
             conv_id="deadbeef1234",
             account="test",
