@@ -10,11 +10,8 @@ from clerk.models import (
     ExitCode,
     Message,
     MessageFlag,
-)
-from clerk.models import (
-    MessageFlag,
-    flags_to_bitmask,
     bitmask_to_flags,
+    flags_to_bitmask,
 )
 
 
@@ -38,9 +35,6 @@ def test_bitmask_to_flags_zero_is_empty():
 
 
 def test_message_carries_uid():
-    from datetime import datetime
-    from clerk.models import Message, Address
-
     msg = Message(
         message_id="<a@b>",
         conv_id="abc123",
