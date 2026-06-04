@@ -607,6 +607,9 @@ def _auth_imap(account: str, acct_config: Any, password: str | None) -> dict[str
 EXAMPLE_QUERIES = """
 ## Example Queries
 
+Flags are an INTEGER bitmask: SEEN=1, ANSWERED=2, FLAGGED=4, DELETED=8, DRAFT=16.
+Unread means the SEEN bit is clear: `flags & 1 = 0`.
+
 ```sql
 -- Inbox: recent conversations
 SELECT conv_id, from_addr, from_name, subject, date_utc, flags
@@ -620,20 +623,21 @@ ORDER BY date_utc ASC
 
 -- Unread counts by folder
 SELECT folder, COUNT(*) as unread
-FROM messages WHERE flags NOT LIKE '%"seen"%'
+FROM messages WHERE flags & 1 = 0
 GROUP BY folder
 
--- Full-text search
-SELECT m.message_id, m.from_addr, m.subject, m.date_utc
+-- Full-text search, ranked by relevance, with a highlighted snippet
+SELECT m.message_id, m.from_addr, m.subject, m.date_utc,
+       snippet(messages_fts, 2, '[', ']', ' ... ', 10) AS preview
 FROM messages_fts f
 JOIN messages m ON m.rowid = f.rowid
 WHERE messages_fts MATCH 'quarterly report'
-ORDER BY m.date_utc DESC LIMIT 20
+ORDER BY bm25(messages_fts) LIMIT 20
 
--- Priority senders (combine with clerk://config priorities)
+-- Priority senders (advisory: clerk does not act on priorities; you apply them)
 SELECT message_id, from_addr, subject, date_utc
 FROM messages
-WHERE from_addr LIKE '%@siue.edu%' AND flags NOT LIKE '%"seen"%'
+WHERE from_addr LIKE '%@siue.edu%' AND flags & 1 = 0
 ORDER BY date_utc DESC
 
 -- Attachments for a message

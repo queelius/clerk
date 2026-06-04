@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 import pytest
 
 from clerk.cache import Cache
+from clerk.mcp_server import EXAMPLE_QUERIES
 from clerk.models import Address, Message, MessageFlag
 
 
@@ -242,3 +243,13 @@ class TestClerkSqlTool:
             )
             assert "rows" in result
             assert result["count"] <= 50
+
+
+def test_example_queries_use_bitmask_not_like():
+    assert 'flags NOT LIKE' not in EXAMPLE_QUERIES
+    assert 'flags & 1 = 0' in EXAMPLE_QUERIES
+
+
+def test_example_queries_show_relevance_search():
+    assert 'bm25(' in EXAMPLE_QUERIES
+    assert 'snippet(' in EXAMPLE_QUERIES
