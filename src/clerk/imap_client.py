@@ -455,6 +455,7 @@ class ImapClient:
         conv_id = compute_conv_id(message_id, references, in_reply_to)
 
         return Message(
+            uid=uid,
             message_id=message_id,
             conv_id=conv_id,
             folder=folder,
