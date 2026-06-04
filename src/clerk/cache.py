@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS messages (
     folder TEXT NOT NULL,
     uid INTEGER NOT NULL,
 
-    message_id TEXT,
+    message_id TEXT NOT NULL,
     conv_id TEXT NOT NULL,
     root_message_id TEXT,
     thread_subject TEXT DEFAULT '',
@@ -265,9 +265,10 @@ class Cache:
                     reply_to_json=excluded.reply_to_json,
                     subject=excluded.subject,
                     date_utc=excluded.date_utc,
+                    -- body_skipped is set on INSERT and preserved on re-store
+                    -- (the sync-engine task owns clearing it when a body is later fetched).
                     body_text=COALESCE(excluded.body_text, messages.body_text),
                     body_html=COALESCE(excluded.body_html, messages.body_html),
-                    body_skipped=excluded.body_skipped,
                     flags=excluded.flags,
                     attachments_json=excluded.attachments_json,
                     in_reply_to=excluded.in_reply_to,
@@ -552,6 +553,8 @@ class Cache:
 
     def update_flags(self, message_id: str, flags: Sequence[MessageFlag]) -> None:
         """Update message flags (stored as an INTEGER bitmask)."""
+        # Keyed by message_id (unique within INBOX-only scope today); the
+        # UID-keyed mutations follow-on plan will re-key this on (account, folder, uid).
         with self._connect() as conn:
             conn.execute(
                 "UPDATE messages SET flags = ? WHERE message_id = ?",
