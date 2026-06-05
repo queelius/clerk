@@ -722,3 +722,29 @@ def test_get_message_round_trips_body_skipped(tmp_path):
     got = cache.get_message("<bsr@x>")
     assert got is not None
     assert got.body_skipped is True
+
+
+# ---------------------------------------------------------------------------
+# Task 4: dead-letter set for parse failures
+# ---------------------------------------------------------------------------
+
+
+def test_record_and_get_deadletter(tmp_path):
+    cache = Cache(db_path=tmp_path / "c.db")
+    assert cache.get_deadletter_uids("acct", "INBOX") == []
+    cache.record_deadletter("acct", "INBOX", 7)
+    assert cache.get_deadletter_uids("acct", "INBOX") == [7]
+
+
+def test_deadletter_ages_out_after_max_attempts(tmp_path):
+    cache = Cache(db_path=tmp_path / "c.db")
+    for _ in range(3):  # _DEADLETTER_MAX_ATTEMPTS
+        cache.record_deadletter("acct", "INBOX", 9)
+    assert 9 not in cache.get_deadletter_uids("acct", "INBOX")
+
+
+def test_clear_deadletter(tmp_path):
+    cache = Cache(db_path=tmp_path / "c.db")
+    cache.record_deadletter("acct", "INBOX", 5)
+    cache.clear_deadletter("acct", "INBOX", 5)
+    assert cache.get_deadletter_uids("acct", "INBOX") == []

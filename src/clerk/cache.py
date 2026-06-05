@@ -29,6 +29,9 @@ _CONV_ID_PREFIX_RE = re.compile(r"^[0-9a-f]{1,12}$")
 
 SCHEMA_VERSION = 2
 
+# Parse-failure dead-letter: retry a UID this many times before giving up.
+_DEADLETTER_MAX_ATTEMPTS = 3
+
 SCHEMA = """
 -- Core message storage. Identity is the server-truthful (account, folder, uid).
 CREATE TABLE IF NOT EXISTS messages (
@@ -790,6 +793,40 @@ class Cache:
                 (account, since.isoformat()),
             ).fetchone()
             return int(row[0]) if row else 0
+
+    def _deadletter_key(self, account: str, folder: str) -> str:
+        return f"deadletter:{account}:{folder}"
+
+    def record_deadletter(self, account: str, folder: str, uid: int) -> int:
+        """Increment the parse-failure attempt count for a UID; return the count."""
+        key = self._deadletter_key(account, folder)
+        raw = self.get_meta(key)
+        data = json.loads(raw) if raw else {}
+        count = int(data.get(str(uid), 0)) + 1
+        data[str(uid)] = count
+        self.set_meta(key, json.dumps(data))
+        return count
+
+    def get_deadletter_uids(
+        self, account: str, folder: str, max_attempts: int = _DEADLETTER_MAX_ATTEMPTS
+    ) -> list[int]:
+        """UIDs still eligible for retry (attempt count below max_attempts), ascending."""
+        raw = self.get_meta(self._deadletter_key(account, folder))
+        if not raw:
+            return []
+        data = json.loads(raw)
+        return sorted(int(uid) for uid, count in data.items() if int(count) < max_attempts)
+
+    def clear_deadletter(self, account: str, folder: str, uid: int) -> None:
+        """Remove a UID from the dead-letter set (it parsed successfully)."""
+        key = self._deadletter_key(account, folder)
+        raw = self.get_meta(key)
+        if not raw:
+            return
+        data = json.loads(raw)
+        if str(uid) in data:
+            del data[str(uid)]
+            self.set_meta(key, json.dumps(data))
 
 
 # Global cache instance
