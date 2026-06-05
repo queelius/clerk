@@ -1,51 +1,25 @@
-"""Integration tests for inbox operations with Greenmail."""
+"""Integration: sync from Greenmail into the cache and read via SQL."""
 
 
+class TestInboxSync:
+    def test_sync_populates_cache(self, api_with_greenmail, greenmail_server, populated_mailbox):
+        api = api_with_greenmail
+        result = api.sync_folder(account="test", folder="INBOX")
+        assert result["synced"] >= 4
+        rows = api.cache.execute_readonly_sql(
+            "SELECT subject FROM messages WHERE account = 'test'"
+        )
+        subjects = [r["subject"] for r in rows]
+        assert any("Test Email 1" in s for s in subjects)
 
-class TestInbox:
-    """Tests for inbox listing with real IMAP server."""
-
-    def test_list_inbox(self, api_with_greenmail, populated_mailbox):
-        """Test listing inbox returns emails."""
-        result = api_with_greenmail.list_inbox(limit=10)
-
-        assert result.count > 0
-        assert len(result.conversations) > 0
-
-    def test_list_inbox_fresh(self, api_with_greenmail, populated_mailbox):
-        """Test fresh inbox fetch bypasses cache."""
-        # First fetch
-        api_with_greenmail.list_inbox(limit=10)
-
-        # Fresh fetch
-        result2 = api_with_greenmail.list_inbox(limit=10, fresh=True)
-
-        assert result2.count > 0
-        assert result2.from_cache is False
-
-    def test_get_conversation(self, api_with_greenmail, populated_mailbox):
-        """Test getting a specific conversation."""
-        # First list to populate cache
-        result = api_with_greenmail.list_inbox(limit=10)
-
-        if result.conversations:
-            conv_id = result.conversations[0].conv_id
-            conv = api_with_greenmail.get_conversation(conv_id)
-
-            assert conv is not None
-            assert conv.conv_id == conv_id
-            assert len(conv.messages) > 0
-
-    def test_get_message(self, api_with_greenmail, populated_mailbox):
-        """Test getting a specific message."""
-        # First list to populate cache
-        result = api_with_greenmail.list_inbox(limit=10)
-
-        if result.conversations:
-            conv = api_with_greenmail.get_conversation(result.conversations[0].conv_id)
-            if conv and conv.messages:
-                msg_id = conv.messages[0].message_id
-                msg = api_with_greenmail.get_message(msg_id)
-
-                assert msg is not None
-                assert msg.message_id == msg_id
+    def test_synced_body_is_full_text_searchable(
+        self, api_with_greenmail, greenmail_server, populated_mailbox
+    ):
+        api = api_with_greenmail
+        api.sync_folder(account="test", folder="INBOX")
+        rows = api.cache.execute_readonly_sql(
+            "SELECT m.subject FROM messages_fts f "
+            "JOIN messages m ON m.rowid = f.rowid "
+            "WHERE messages_fts MATCH 'content'"
+        )
+        assert len(rows) >= 1

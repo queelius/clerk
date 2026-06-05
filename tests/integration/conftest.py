@@ -95,7 +95,6 @@ def test_cache(tmp_path):
 @pytest.fixture
 def test_draft_manager(tmp_path, test_cache, monkeypatch):
     """Create a test draft manager."""
-    monkeypatch.setattr("clerk.drafts.get_data_dir", lambda: tmp_path)
     monkeypatch.setattr("clerk.drafts.get_cache", lambda: test_cache)
     return DraftManager()
 
