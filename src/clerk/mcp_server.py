@@ -668,6 +668,10 @@ def resource_config() -> str:
         "priorities": {
             "senders": config.priorities.senders,
             "topics": config.priorities.topics,
+            "note": (
+                "Advisory only: clerk does not sort or filter by these. "
+                "The agent applies them when reasoning about what matters."
+            ),
         },
         "cache": {
             "window_days": config.cache.window_days,

@@ -5,8 +5,16 @@ from datetime import UTC, datetime
 import pytest
 
 from clerk.cache import Cache
-from clerk.mcp_server import EXAMPLE_QUERIES
+from clerk.mcp_server import EXAMPLE_QUERIES, resource_config
 from clerk.models import Address, Message, MessageFlag
+
+
+def test_config_resource_marks_priorities_advisory():
+    """clerk://config must flag priorities as advisory (clerk does not act on them)."""
+    import json
+
+    data = json.loads(resource_config())
+    assert "advisory" in data["priorities"]["note"].lower()
 
 
 @pytest.fixture

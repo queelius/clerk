@@ -84,9 +84,8 @@ mypy src
 - **cache.py** - `Cache` class with SQLite + FTS5. Handles message storage, search, conversation threading.
 - **imap_client.py** - `ImapClient` with context manager support. Use `get_imap_client(account_name)`.
 - **smtp_client.py** - Async SMTP sending with safety checks.
-- **search.py** - Search query parser supporting operators like `from:`, `to:`, `has:attachment`, `is:unread`.
-- **threading.py** - Email threading using References/In-Reply-To headers.
-- **drafts.py** - Local draft storage in `~/.local/share/clerk/drafts/`.
+- **threading.py** - Email threading using References/In-Reply-To headers. Reads are done as SQL via `clerk_sql` (FTS5) plus `clerk://schema`; there is no search-operator parser.
+- **drafts.py** - Draft storage in the `drafts` table of `cache.db` (via the shared `Cache` connection).
 - **mcp_server.py** - Primary interface: FastMCP server with 10 tools + 3 resources. Two-step send confirmation is mandatory here.
 - **cli.py** - Setup, auth, and debug commands only (~550 lines).
 
@@ -101,8 +100,7 @@ Conversation IDs are 12-char SHA256 prefixes. The cache supports prefix matching
 
 ```
 ~/.config/clerk/config.yaml     # Configuration
-~/.local/share/clerk/cache.db   # Message cache (SQLite)
-~/.local/share/clerk/drafts/    # Pending drafts
+~/.local/share/clerk/cache.db   # SQLite cache: messages (+FTS5), drafts, send audit log
 ```
 
 ## Testing Patterns

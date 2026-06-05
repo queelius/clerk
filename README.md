@@ -1,6 +1,6 @@
 # clerk
 
-A thin CLI for LLM agents to interact with email via IMAP/SMTP.
+A thin MCP server (and small CLI) that lets an LLM agent interact with email over IMAP/SMTP.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
@@ -21,180 +21,134 @@ Clerk is intentionally dumb. It's a bridge, not a brain.
                  ▼
 ┌─────────────────────────────────────┐
 │              clerk                   │
-│  • Fetches email (IMAP)             │
-│  • Sends email (SMTP)               │
-│  • Returns structured JSON          │
+│  • Syncs email into a local cache   │
+│  • Exposes it as SQL + MCP tools    │
+│  • Sends email (SMTP), paranoidly   │
 │  • Knows nothing about content      │
 └─────────────────────────────────────┘
 ```
 
+The LLM provides the intelligence (summarizing, prioritizing, drafting). Clerk
+provides safe, structured access to your mail server. The primary interface is an
+MCP server; the CLI exists only for setup, auth, and debugging.
+
 ## Installation
 
 ```bash
-pip install clerk
+pip install email-clerk
 ```
 
-Or install from source:
+Or from source:
 
 ```bash
-git clone https://github.com/spinoza/clerk.git
+git clone https://github.com/queelius/clerk.git
 cd clerk
 pip install -e .
 ```
 
-## Quick Start
+The installed command is `clerk`.
 
-### 1. Add an account
+## How it works
 
-```bash
-# Interactive setup for IMAP/SMTP
-clerk accounts add --name personal
+1. **Sync** pulls messages from IMAP into a local SQLite cache (with FTS5 full-text
+   search). Bodies are fetched eagerly so search is complete; the cache is kept
+   faithful to the server (flags, moves, and deletions made on other devices are
+   reconciled on each sync).
+2. **Read** happens against the cache: the agent runs SQL with `clerk_sql` and pulls
+   full message bodies with `clerk_read`. No round-trip to the server on the read path.
+3. **Write** (flags, moves, sends) goes to the server first; the cache is updated only
+   after the server confirms.
 
-# Or for Gmail with OAuth
-clerk accounts add-gmail work
-```
+## MCP server
 
-### 2. Check your inbox
-
-```bash
-clerk inbox
-clerk inbox --unread --json
-```
-
-### 3. Read a conversation
+This is the primary interface. Start it with:
 
 ```bash
-clerk show <conv-id>
-clerk show <conv-id> --json
+clerk mcp-server
 ```
 
-### 4. Search
+Add it to Claude Code's MCP configuration:
+
+```json
+{
+  "mcpServers": {
+    "clerk": {
+      "command": "clerk",
+      "args": ["mcp-server"]
+    }
+  }
+}
+```
+
+### Tools
+
+| Tool | Description |
+|------|-------------|
+| `clerk_sql` | Run a read-only SQL `SELECT` over the cached messages (the main read path). |
+| `clerk_read` | Read one full message by `message_id` (fetches the body from IMAP if needed). |
+| `clerk_sync` | Sync a folder from IMAP into the cache (all accounts if none given). |
+| `clerk_reply` | Create a reply draft to a message, with headers auto-populated. |
+| `clerk_draft` | Create a new (non-reply) draft. |
+| `clerk_send` | Send a draft. Two-step: call once for a preview + token, again with the token to send. |
+| `clerk_move` | Move a message to another folder. |
+| `clerk_flag` | Set a flag: `flag` / `unflag` / `read` / `unread`. |
+| `clerk_status` | Version, per-account connection health and sync freshness, and a cache summary. |
+| `clerk_auth` | Re-authenticate an account (M365 device code, Gmail refresh, IMAP password). |
+
+### Resources
+
+| Resource | Description |
+|----------|-------------|
+| `clerk://schema` | Cache DB schema plus example SQL queries for `clerk_sql`. |
+| `clerk://config` | Accounts, default account, settings (secrets redacted). |
+| `clerk://folders` | Available folders per account (cached for an hour). |
+
+### Reading mail (the SQL model)
+
+Reads are SQL, not a fixed set of verbs. Read `clerk://schema` for the columns and
+examples, then query with `clerk_sql`. Flags are an INTEGER bitmask
+(`SEEN=1, ANSWERED=2, FLAGGED=4, DELETED=8, DRAFT=16`); unread is `flags & 1 = 0`.
+
+```sql
+-- recent inbox
+SELECT conv_id, from_addr, subject, date_utc, flags
+FROM messages WHERE folder='INBOX' AND account='personal'
+ORDER BY date_utc DESC LIMIT 20
+
+-- unread counts by folder
+SELECT folder, COUNT(*) AS unread FROM messages WHERE flags & 1 = 0 GROUP BY folder
+
+-- relevance-ranked full-text search with a snippet
+SELECT m.message_id, m.subject, snippet(messages_fts, 2, '[', ']', ' ... ', 10) AS preview
+FROM messages_fts f JOIN messages m ON m.rowid = f.rowid
+WHERE messages_fts MATCH 'quarterly report'
+ORDER BY bm25(messages_fts) LIMIT 20
+```
+
+Then `clerk_read` a specific `message_id` for the full body.
+
+> Note: attachment download/sending is not yet supported. `clerk_read` reports
+> attachment metadata (filename, size, content type) but cannot fetch the bytes.
+
+## CLI reference
+
+The CLI is for setup, auth, and debugging only. All mail operations go through the
+MCP tools above.
 
 ```bash
-clerk search "from:alice project deadline"
-clerk search "has:attachment after:2025-01-01"
-```
+clerk mcp-server                # start the MCP server (primary interface)
+clerk version                   # print version
+clerk status [--json]           # connection status and account info
+clerk sync [-a ACCT] [-f FOLDER] [--full]   # sync the cache from IMAP
 
-### 5. Compose and send
+clerk cache status [--json]     # cache statistics
+clerk cache clear               # clear cached messages and drafts (keeps the send audit log)
 
-```bash
-# Create a draft
-clerk draft new --to bob@example.com --subject "Hello" --body "Hi there!"
-
-# Review it
-clerk draft show <draft-id>
-
-# Send it (requires confirmation)
-clerk send <draft-id>
-```
-
-## CLI Reference
-
-### Inbox & Messages
-
-```bash
-clerk inbox                     # List conversations
-clerk inbox --limit 50          # More results
-clerk inbox --unread            # Only unread
-clerk inbox --fresh             # Bypass cache
-clerk inbox --json              # JSON output
-
-clerk show <conv-id>            # Show conversation
-clerk show <message-id>         # Show single message
-clerk show abc123               # Prefix matching (if unambiguous)
-
-clerk unread                    # Unread counts by folder
-```
-
-Conversation IDs are 12-character SHA256 prefixes. Shorter prefixes work if unambiguous — if multiple conversations match, clerk shows them for disambiguation.
-
-### Search
-
-```bash
-# Basic search (FTS on cached messages)
-clerk search "quarterly report"
-
-# Advanced search with operators
-clerk search "from:alice subject:meeting has:attachment"
-
-# Raw SQL for power users
-clerk search-sql "SELECT * FROM messages WHERE from_addr LIKE '%@example.com'"
-```
-
-#### Search Operators
-
-| Operator | Example | Description |
-|----------|---------|-------------|
-| `from:` | `from:alice` | Sender contains |
-| `to:` | `to:bob@example.com` | Recipient contains |
-| `subject:` | `subject:meeting` | Subject contains |
-| `body:` | `body:quarterly` | Body contains |
-| `has:attachment` | `has:attachment` | Has attachments |
-| `is:unread` | `is:unread` | Unread messages |
-| `is:read` | `is:read` | Read messages |
-| `is:flagged` | `is:flagged` | Starred/flagged |
-| `after:` | `after:2025-01-01` | After date |
-| `before:` | `before:2025-01-15` | Before date |
-| `date:` | `date:2025-01-10` | On specific date |
-
-### Drafts & Sending
-
-```bash
-clerk draft new --to bob@example.com --subject "Hi" --body "Hello!"
-clerk draft new --reply-to <conv-id> --body "Thanks!"
-clerk draft list
-clerk draft show <draft-id>
-clerk draft delete <draft-id>
-
-clerk send <draft-id>           # Preview and confirm
-```
-
-### Attachments
-
-```bash
-clerk attachment <message-id> --list
-clerk attachment <message-id> document.pdf --save ./downloads/
-```
-
-### Folders
-
-```bash
-clerk folders                   # List folders
-clerk move <message-id> Archive
-clerk archive <message-id>      # Move to Archive
-```
-
-### Interactive Shell
-
-```bash
-clerk shell
-```
-
-The shell provides all CLI commands with tab completion and history:
-
-```
-clerk> inbox --limit 5
-clerk> search from:alice
-clerk> sql SELECT * FROM messages LIMIT 10
-clerk> exit
-```
-
-### Account Management
-
-```bash
-clerk accounts list
-clerk accounts add --name work
-clerk accounts add-gmail personal
-clerk accounts test work
-clerk accounts remove work
-```
-
-### Cache
-
-```bash
-clerk cache status
-clerk cache clear
-clerk cache refresh
+clerk accounts                  # list configured accounts
+clerk accounts add NAME [-p PROTOCOL] [-e EMAIL] [--default]
+clerk accounts test NAME        # test IMAP and SMTP connectivity
+clerk accounts remove NAME [-y]
+clerk accounts auth NAME        # run the OAuth / device-code flow in the terminal
 ```
 
 ## Configuration
@@ -220,131 +174,68 @@ accounts:
       name: "User Name"
 
   work:
-    protocol: gmail
+    protocol: gmail        # or microsoft365
     oauth:
       client_id_file: ~/.config/clerk/gmail_client.json
 
 cache:
-  window_days: 7
-  inbox_freshness_min: 5
+  window_days: 7           # retention window (only pruned when prune_enabled)
+  inbox_freshness_min: 5   # staleness threshold for clerk_status
   body_freshness_min: 60
+  body_max_bytes: 1000000  # bodies larger than this are fetched on demand, not cached
+  sync_chunk_size: 200     # messages fetched per sync chunk
+  reconcile_window: 500    # most-recent cached UIDs re-checked for flag/expunge drift per sync (0 disables)
+  prune_enabled: false     # if true, sync deletes cached messages older than window_days
 
 send:
   require_confirmation: true
-  rate_limit: 20
+  rate_limit: 20           # max sends per hour (persistent, survives restarts)
+  blocked_recipients: []
 ```
 
-### Credential Storage
+### Credential storage
 
-Passwords are stored in your system keyring (libsecret, macOS Keychain, Windows Credential Manager).
+Passwords are stored in your system keyring (libsecret, macOS Keychain, Windows
+Credential Manager). Alternatives, per account:
 
-Alternative methods:
-- `password_cmd: "pass email/fastmail"` - command that outputs password
-- `password_file: ~/.secrets/email.txt` - file containing password
+- `password_cmd: "pass email/fastmail"` (a command that prints the password)
+- `password_file: ~/.secrets/email.txt` (a file with 0600 permissions)
 
-## MCP Server
+OAuth tokens (Gmail) and the M365 MSAL token cache are also kept in the keyring.
 
-Clerk includes an MCP (Model Context Protocol) server for LLM integration:
+### Sending safety
 
-```bash
-clerk mcp-server
-```
+Sending is paranoid by design: a persistent hourly rate limit, a blocked-recipients
+list, mandatory two-step confirmation via `clerk_send` (the token is bound to the
+draft's content, so editing the draft invalidates it), a FROM/account check, and an
+append-only audit log.
 
-Add to Claude Code's MCP configuration:
-
-```json
-{
-  "mcpServers": {
-    "clerk": {
-      "command": "clerk",
-      "args": ["mcp-server"]
-    }
-  }
-}
-```
-
-### Available Tools
-
-| Tool | Description |
-|------|-------------|
-| `clerk_inbox` | List conversations |
-| `clerk_show` | Get conversation/message details (prefix matching) |
-| `clerk_search` | Search messages (FTS + operators) |
-| `clerk_sql` | Readonly SQL queries on message database |
-| `clerk_search_sql` | SQL search returning Message objects |
-| `clerk_draft` | Create draft |
-| `clerk_drafts` | List drafts |
-| `clerk_send` | Send draft (two-step confirmation) |
-| `clerk_delete_draft` | Delete draft |
-| `clerk_mark_read` | Mark message as read |
-| `clerk_mark_unread` | Mark message as unread |
-| `clerk_archive` | Archive message |
-| `clerk_move` | Move message to folder |
-| `clerk_flag` | Flag/unflag message |
-| `clerk_attachments` | List attachments |
-| `clerk_status` | Connection status |
-
-### Claude Code Skill
-
-Install the clerk skill for Claude Code:
-
-```bash
-clerk skill install            # Install globally (~/.claude/skills/clerk/)
-clerk skill install --local    # Install for current project only
-clerk skill status             # Check installation status
-clerk skill uninstall          # Remove
-```
-
-The skill teaches Claude Code how to use clerk commands effectively.
-
-## Data Locations
+## Data locations
 
 ```
 ~/.config/clerk/
-  config.yaml           # Configuration
+  config.yaml           # configuration
   gmail_client.json     # Gmail OAuth client (optional)
 
 ~/.local/share/clerk/
-  cache.db              # Message cache (ephemeral)
-  drafts/               # Pending drafts
-  sent.log              # Audit log
+  cache.db              # SQLite cache: messages (+ FTS5), drafts, send audit log
 ```
 
 ## Development
 
 ```bash
-# Install dev dependencies
 pip install -e ".[dev]"
 
-# Run tests
-pytest
+pytest                          # unit tests
+ruff check src tests            # lint
+mypy src                        # type check
 
-# Run integration tests (requires Docker)
+# Integration tests (require Docker; use a Greenmail mail server)
 docker-compose -f docker-compose.test.yml up -d
 pytest tests/integration/
 docker-compose -f docker-compose.test.yml down
-
-# Lint and type check
-ruff check src tests
-mypy src
 ```
-
-### Demo Environment
-
-A Docker-based demo with a mock email server (Greenmail):
-
-```bash
-cd demo
-make start        # Start Greenmail mail server
-make setup        # Configure clerk for demo
-make send-test    # Populate with 18 test emails
-make stop         # Tear down
-```
-
-Then use clerk normally: `clerk inbox --fresh`
-
-See `demo/README.md` for details on test accounts and email content.
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+MIT License. See [LICENSE](LICENSE) for details.
