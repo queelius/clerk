@@ -460,7 +460,7 @@ class ImapClient:
             conv_id=conv_id,
             folder=folder,
             account=self.account_name,
-            **{"from": from_addr},
+            **{"from": from_addr},  # type: ignore[arg-type]
             to=to_addrs,
             cc=cc_addrs,
             reply_to=reply_to_addrs,
