@@ -811,3 +811,44 @@ def test_get_last_sync_none_then_set(tmp_path):
     assert cache.get_last_sync("acct") is None
     cache.mark_inbox_synced("acct")
     assert cache.get_last_sync("acct") is not None
+
+
+# ---------------------------------------------------------------------------
+# Task 1: Pre-send reservation (pending/sent/failed) for the rate limiter
+# ---------------------------------------------------------------------------
+
+
+def test_reserve_send_counts_toward_limit(tmp_path):
+    cache = Cache(db_path=tmp_path / "c.db")
+    from datetime import timedelta
+
+    hour_ago = datetime.now(UTC) - timedelta(hours=1)
+    assert cache.count_sends_since("acct", hour_ago) == 0
+    cache.reserve_send("acct", [Address(addr="x@y.com")], [], [], "subj")
+    assert cache.count_sends_since("acct", hour_ago) == 1
+
+
+def test_finalize_failed_not_counted(tmp_path):
+    cache = Cache(db_path=tmp_path / "c.db")
+    from datetime import timedelta
+
+    hour_ago = datetime.now(UTC) - timedelta(hours=1)
+    send_id = cache.reserve_send("acct", [Address(addr="x@y.com")], [], [], "subj")
+    cache.finalize_send(send_id, "failed", None)
+    assert cache.count_sends_since("acct", hour_ago) == 0
+
+
+def test_finalize_sent_counts_and_records_message_id(tmp_path):
+    cache = Cache(db_path=tmp_path / "c.db")
+    from datetime import timedelta
+
+    hour_ago = datetime.now(UTC) - timedelta(hours=1)
+    send_id = cache.reserve_send("acct", [Address(addr="x@y.com")], [], [], "subj")
+    cache.finalize_send(send_id, "sent", "<m@x>")
+    assert cache.count_sends_since("acct", hour_ago) == 1
+    with cache._connect() as conn:
+        row = conn.execute(
+            "SELECT status, message_id FROM send_log WHERE id = ?", (send_id,)
+        ).fetchone()
+    assert row["status"] == "sent"
+    assert row["message_id"] == "<m@x>"

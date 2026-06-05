@@ -830,13 +830,60 @@ class Cache:
 
         Backs the persistent rate limiter: survives restarts, is atomic with
         respect to concurrent MCP clients. Callers pass a UTC datetime.
+        Only 'pending' and 'sent' rows are counted; 'failed' rows are excluded
+        so a failed send does not consume quota.
         """
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT COUNT(*) FROM send_log WHERE account = ? AND timestamp >= ?",
+                "SELECT COUNT(*) FROM send_log "
+                "WHERE account = ? AND timestamp >= ? AND status IN ('pending', 'sent')",
                 (account, since.isoformat()),
             ).fetchone()
             return int(row[0]) if row else 0
+
+    def reserve_send(
+        self,
+        account: str,
+        to: list[Address],
+        cc: list[Address],
+        bcc: list[Address],
+        subject: str,
+    ) -> int:
+        """Reserve a send_log row (status='pending') before sending; return its id.
+
+        The pending row counts toward the rate limit immediately, so a send is
+        counted even if finalize_send never runs (e.g. a disk error after SMTP).
+        """
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO send_log
+                    (timestamp, account, to_json, cc_json, bcc_json, subject, message_id, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
+                """,
+                (
+                    datetime.now(UTC).isoformat(),
+                    account,
+                    json.dumps([a.model_dump() for a in to]),
+                    json.dumps([a.model_dump() for a in cc]),
+                    json.dumps([a.model_dump() for a in bcc]),
+                    subject,
+                    None,
+                ),
+            )
+            if cur.lastrowid is None:
+                raise RuntimeError("reserve_send: INSERT did not produce a row id")
+            return cur.lastrowid
+
+    def finalize_send(
+        self, send_id: int, status: str, message_id: str | None
+    ) -> None:
+        """Mark a reserved send row as 'sent' (with its message id) or 'failed'."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE send_log SET status = ?, message_id = ? WHERE id = ?",
+                (status, message_id, send_id),
+            )
 
     def _deadletter_key(self, account: str, folder: str) -> str:
         return f"deadletter:{account}:{folder}"
