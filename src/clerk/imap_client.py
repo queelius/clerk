@@ -528,6 +528,24 @@ class ImapClient:
                 failed.append(uid)
         return messages, failed
 
+    def fetch_flags(
+        self, folder: str, uids: Sequence[int]
+    ) -> dict[int, list[MessageFlag]]:
+        """Fetch just FLAGS for a set of UIDs.
+
+        Returns {uid: flags} for the UIDs the server still has. UIDs that were
+        requested but are absent from the response have been expunged, so the
+        caller can delete them. Read-only select.
+        """
+        if not uids:
+            return {}
+        self.client.select_folder(folder, readonly=True)
+        fetch_data = self.client.fetch(list(uids), ["FLAGS"])
+        return {
+            uid: imap_flags_to_model(data.get(b"FLAGS", ()))
+            for uid, data in fetch_data.items()
+        }
+
     def fetch_message_body(self, folder: str, message_id: str) -> tuple[str | None, str | None]:
         """Fetch just the body of a specific message."""
         self.client.select_folder(folder, readonly=True)

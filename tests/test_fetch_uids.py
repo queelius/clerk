@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 
 from clerk.config import AccountConfig, ImapConfig, SmtpConfig
 from clerk.imap_client import ImapClient
+from clerk.models import MessageFlag
 
 
 def _client():
@@ -73,3 +74,24 @@ def test_fetch_uids_requests_full_body_when_eager():
     c.fetch_uids("INBOX", [1], fetch_bodies=True)
     args, _ = c._client.fetch.call_args
     assert "BODY.PEEK[]" in args[1]
+
+
+def test_fetch_flags_empty_returns_empty():
+    c = _client()
+    assert c.fetch_flags("INBOX", []) == {}
+
+
+def test_fetch_flags_maps_returned_uids_only():
+    c = _client()
+    # Server returns FLAGS for uid 1 and 2; uid 3 (requested) is absent (expunged).
+    c._client.fetch.return_value = {
+        1: {b"FLAGS": (b"\\Seen",)},
+        2: {b"FLAGS": ()},
+    }
+    result = c.fetch_flags("INBOX", [1, 2, 3])
+    assert set(result.keys()) == {1, 2}
+    assert MessageFlag.SEEN in result[1]
+    assert result[2] == []
+    # FLAGS-only fetch (no body)
+    args, _ = c._client.fetch.call_args
+    assert args[1] == ["FLAGS"]
