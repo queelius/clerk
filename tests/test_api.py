@@ -289,7 +289,7 @@ class TestMessageActions:
 
         api.mark_read("<msg123@example.com>")
 
-        mock_client.add_flags.assert_called_once()
+        mock_client.add_flags_by_uid.assert_called_once()
 
     def test_archive_message(self, api, cache, sample_message, monkeypatch):
         """Test archiving a message."""
@@ -410,8 +410,8 @@ class TestSetFlag:
 
         api.mark_read("<msg123@example.com>")
 
-        args, _ = mock_client.add_flags.call_args
-        # add_flags(folder, message_id, [flag]) — flag should be SEEN.
+        args, _ = mock_client.add_flags_by_uid.call_args
+        # add_flags_by_uid(folder, uid, [flag]) — flag should be SEEN.
         assert MessageFlag.SEEN in args[2]
 
     def test_unflag_removes_flagged(self, api, cache, sample_message, monkeypatch):
@@ -426,7 +426,7 @@ class TestSetFlag:
 
         api.unflag_message("<msg123@example.com>")
 
-        args, _ = mock_client.remove_flags.call_args
+        args, _ = mock_client.remove_flags_by_uid.call_args
         assert MessageFlag.FLAGGED in args[2]
 
     def test_cache_write_failure_does_not_raise(self, api, cache, sample_message, monkeypatch):

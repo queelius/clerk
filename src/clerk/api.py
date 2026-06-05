@@ -468,10 +468,17 @@ class ClerkAPI:
         folder = msg.folder if msg else "INBOX"
 
         with get_imap_client(account_name) as client:
-            if on:
-                client.add_flags(folder, message_id, [flag])
+            if msg is not None and msg.uid is not None:
+                if on:
+                    client.add_flags_by_uid(folder, msg.uid, [flag])
+                else:
+                    client.remove_flags_by_uid(folder, msg.uid, [flag])
             else:
-                client.remove_flags(folder, message_id, [flag])
+                # Not cached: fall back to a Message-ID search.
+                if on:
+                    client.add_flags(folder, message_id, [flag])
+                else:
+                    client.remove_flags(folder, message_id, [flag])
 
         if msg:
             try:
