@@ -131,6 +131,9 @@ class TestCacheConfig:
     def test_cache_config_reconcile_window_can_disable(self):
         assert CacheConfig(reconcile_window=0).reconcile_window == 0
 
+    def test_cache_config_prune_disabled_by_default(self):
+        assert CacheConfig().prune_enabled is False
+
 
 class TestSendConfig:
     def test_defaults(self):

@@ -668,10 +668,15 @@ class ClerkAPI:
 
         self.cache.mark_inbox_synced(account_name)
 
+        pruned = 0
+        if self.config.cache.prune_enabled:
+            pruned = self.cache.prune_old_messages(self.config.cache.window_days)
+
         return {
             "synced": synced,
             "reconciled": recon["reconciled"],
             "expunged": recon["expunged"],
+            "pruned": pruned,
             "account": account_name,
             "folder": folder,
             "last_uid": highest_uid,

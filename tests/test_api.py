@@ -753,6 +753,50 @@ class TestReconcile:
         spy.assert_not_called()
 
 
+class TestPrune:
+    """Pruning is off by default; when enabled, sync drops messages older than window_days."""
+
+    def _client(self, monkeypatch):
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.search_uids.return_value = []
+        mock_client.fetch_flags.return_value = {}
+        monkeypatch.setattr("clerk.api.get_imap_client", lambda _: mock_client)
+        return mock_client
+
+    def _store_old(self, cache, uid, days_old):
+        from datetime import timedelta
+
+        cache.store_message(
+            Message(
+                uid=uid, message_id=f"<p{uid}@x>", conv_id=f"pc{uid}", account="test",
+                folder="INBOX", **{"from": Address(addr="a@x.com")},
+                to=[Address(addr="t@x.com")], subject="s",
+                date=datetime.now(UTC) - timedelta(days=days_old),
+                headers_fetched_at=datetime.now(UTC),
+            )
+        )
+
+    def test_prune_disabled_keeps_old_messages(self, api, cache, monkeypatch):
+        monkeypatch.setattr(api.config.cache, "reconcile_window", 0)  # isolate prune
+        self._store_old(cache, 90, days_old=365)
+        self._client(monkeypatch)
+        result = api.sync_folder(account="test", folder="INBOX")
+        assert result["pruned"] == 0
+        assert cache.get_message("<p90@x>") is not None
+
+    def test_prune_enabled_drops_old_messages(self, api, cache, monkeypatch):
+        monkeypatch.setattr(api.config.cache, "reconcile_window", 0)  # isolate prune
+        monkeypatch.setattr(api.config.cache, "prune_enabled", True)
+        monkeypatch.setattr(api.config.cache, "window_days", 30)
+        self._store_old(cache, 91, days_old=365)  # older than the 30-day window
+        self._client(monkeypatch)
+        result = api.sync_folder(account="test", folder="INBOX")
+        assert result["pruned"] >= 1
+        assert cache.get_message("<p91@x>") is None
+
+
 class TestStatusEnrichment:
     """clerk_status (via get_status) reports staleness and a cache summary."""
 

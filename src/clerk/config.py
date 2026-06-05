@@ -156,6 +156,10 @@ class CacheConfig(BaseModel):
         ge=0,
         description="Re-check flags/expunges for the most-recent N cached UIDs per sync (0 disables)",
     )
+    prune_enabled: bool = Field(
+        default=False,
+        description="If true, sync deletes cached messages older than window_days",
+    )
 
 
 class SendConfig(BaseModel):
