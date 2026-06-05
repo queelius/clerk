@@ -845,6 +845,23 @@ class TestSendReservation:
         assert result.success
         assert self._count(cache) == 1  # the pending reservation counts
 
+    def test_audit_failure_does_not_uncount_send(self, api, cache, monkeypatch):
+        # If the post-send audit write fails, a SUCCESSFUL send must still count.
+        # Old code logged after send (best-effort log_send); a failed log meant
+        # the send was not counted (the bug). New code reserves a pending row
+        # before SMTP, so the count holds even when finalize/log fails.
+        self._fake_smtp(monkeypatch, success=True)
+        monkeypatch.setattr(
+            cache, "finalize_send", MagicMock(side_effect=RuntimeError("disk full"))
+        )
+        monkeypatch.setattr(
+            cache, "log_send", MagicMock(side_effect=RuntimeError("disk full"))
+        )
+        d = api.create_draft(to=["x@example.com"], subject="s", body="b")
+        result = api.send_draft(d.draft_id)
+        assert result.success
+        assert self._count(cache) == 1
+
 
 class TestStatusEnrichment:
     """clerk_status (via get_status) reports staleness and a cache summary."""
