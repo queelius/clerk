@@ -748,3 +748,33 @@ def test_clear_deadletter(tmp_path):
     cache.record_deadletter("acct", "INBOX", 5)
     cache.clear_deadletter("acct", "INBOX", 5)
     assert cache.get_deadletter_uids("acct", "INBOX") == []
+
+
+# ---------------------------------------------------------------------------
+# Task 2: UID-keyed cache helpers for reconciliation
+# ---------------------------------------------------------------------------
+
+
+def test_get_recent_uid_flags_returns_highest_uids(tmp_path):
+    cache = Cache(db_path=tmp_path / "c.db")
+    cache.store_message(_msg(1, "<a1@x>", flags=[MessageFlag.SEEN]))
+    cache.store_message(_msg(2, "<a2@x>", flags=[]))
+    cache.store_message(_msg(3, "<a3@x>", flags=[MessageFlag.FLAGGED]))
+    # window of 2 returns the two highest UIDs with their flag bitmasks
+    recent = cache.get_recent_uid_flags("acct", "INBOX", 2)
+    assert set(recent.keys()) == {2, 3}
+    assert recent[3] == 4  # FLAGGED bit
+
+
+def test_update_flags_by_uid(tmp_path):
+    cache = Cache(db_path=tmp_path / "c.db")
+    cache.store_message(_msg(5, "<u5@x>", flags=[]))
+    cache.update_flags_by_uid("acct", "INBOX", 5, [MessageFlag.SEEN])
+    assert MessageFlag.SEEN in cache.get_message("<u5@x>").flags
+
+
+def test_delete_by_uid(tmp_path):
+    cache = Cache(db_path=tmp_path / "c.db")
+    cache.store_message(_msg(6, "<d6@x>"))
+    cache.delete_by_uid("acct", "INBOX", 6)
+    assert cache.get_message("<d6@x>") is None

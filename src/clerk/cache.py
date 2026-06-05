@@ -581,6 +581,40 @@ class Cache:
                 (flags_to_bitmask(flags), message_id),
             )
 
+    def get_recent_uid_flags(
+        self, account: str, folder: str, limit: int
+    ) -> dict[int, int]:
+        """The highest `limit` cached UIDs in a folder, mapped to their flag bitmask.
+
+        Used by reconciliation to compare cached flags against the server cheaply.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT uid, flags FROM messages "
+                "WHERE account = ? AND folder = ? ORDER BY uid DESC LIMIT ?",
+                (account, folder, limit),
+            ).fetchall()
+        return {row["uid"]: row["flags"] for row in rows}
+
+    def update_flags_by_uid(
+        self, account: str, folder: str, uid: int, flags: Sequence[MessageFlag]
+    ) -> None:
+        """Update flags for a specific (account, folder, uid)."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE messages SET flags = ? "
+                "WHERE account = ? AND folder = ? AND uid = ?",
+                (flags_to_bitmask(flags), account, folder, uid),
+            )
+
+    def delete_by_uid(self, account: str, folder: str, uid: int) -> None:
+        """Delete a specific (account, folder, uid) row (expunged server-side)."""
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM messages WHERE account = ? AND folder = ? AND uid = ?",
+                (account, folder, uid),
+            )
+
     def update_body(
         self, message_id: str, body_text: str | None, body_html: str | None
     ) -> None:
