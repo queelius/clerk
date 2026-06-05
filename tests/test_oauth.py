@@ -157,6 +157,61 @@ class TestGetGmailCredentials:
         mock_flow.assert_called_once_with(client_file, "test-account")
         assert result == mock_creds
 
+    @patch("clerk.oauth.save_oauth_token")
+    @patch("clerk.oauth.get_oauth_token")
+    def test_expired_credentials_are_refreshed(self, mock_get_token, mock_save):
+        from clerk.oauth import get_gmail_credentials
+
+        mock_get_token.return_value = json.dumps({
+            "token": "t", "refresh_token": "r",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "client_id": "c", "client_secret": "s",
+            "scopes": ["https://mail.google.com/"],
+        })
+        with patch("clerk.oauth._load_credentials") as mock_load:
+            creds = MagicMock()
+            creds.valid = False
+            creds.expired = True
+            creds.refresh_token = "r"
+            creds.token = "t"
+            creds.token_uri = "https://oauth2.googleapis.com/token"
+            creds.client_id = "c"
+            creds.client_secret = "s"
+            creds.scopes = ["https://mail.google.com/"]
+            mock_load.return_value = creds
+
+            result = get_gmail_credentials("test-account")
+
+            creds.refresh.assert_called_once()
+            assert result == creds
+            mock_save.assert_called_once()
+
+    @patch("clerk.oauth.run_oauth_flow")
+    @patch("clerk.oauth.get_oauth_token")
+    def test_refresh_failure_without_client_file_raises_not_browser(
+        self, mock_get_token, mock_flow
+    ):
+        from clerk.oauth import get_gmail_credentials
+
+        mock_get_token.return_value = json.dumps({
+            "token": "t", "refresh_token": "r",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "client_id": "c", "client_secret": "s",
+            "scopes": ["https://mail.google.com/"],
+        })
+        with patch("clerk.oauth._load_credentials") as mock_load:
+            creds = MagicMock()
+            creds.valid = False
+            creds.expired = True
+            creds.refresh_token = "r"
+            creds.refresh.side_effect = RuntimeError("token revoked")
+            mock_load.return_value = creds
+
+            with pytest.raises(ValueError, match="No valid credentials"):
+                get_gmail_credentials("test-account")
+
+            mock_flow.assert_not_called()
+
 
 class TestRunOAuthFlow:
     def test_missing_client_file(self, tmp_path):
