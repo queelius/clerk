@@ -699,13 +699,25 @@ class ImapClient:
             raise ValueError(f"Message not found: {message_id}")
 
         uid = results[0]
+        self.client.move([uid], to_folder)
 
-        # Copy to destination
-        self.client.copy([uid], to_folder)
+    def move_message_by_uid(self, from_folder: str, uid: int, to_folder: str) -> None:
+        """Move a message by UID. Uses UID MOVE where the server supports it,
+        otherwise imapclient's properly-scoped copy+delete+expunge fallback."""
+        self.client.select_folder(from_folder)
+        self.client.move([uid], to_folder)
 
-        # Mark as deleted in source
-        self.client.add_flags([uid], ["\\Deleted"])
-        self.client.expunge()
+    def find_archive_folder(self) -> str:
+        """Resolve the archive folder name across providers (Gmail uses All Mail)."""
+        names = [f.name for f in self.list_folders()]
+        for name in ["Archive", "[Gmail]/All Mail", "All Mail", "Archives"]:
+            if name in names:
+                return name
+        raise ValueError("Could not find archive folder")
+
+    def archive_message_by_uid(self, from_folder: str, uid: int) -> None:
+        """Archive a message by UID (move to the resolved archive folder)."""
+        self.move_message_by_uid(from_folder, uid, self.find_archive_folder())
 
     def archive_message(self, message_id: str, from_folder: str = "INBOX") -> None:
         """Archive a message (move to Archive folder or All Mail for Gmail)."""

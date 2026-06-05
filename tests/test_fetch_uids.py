@@ -114,3 +114,38 @@ def test_set_flags_by_uid():
     c = _client()
     c.set_flags_by_uid("INBOX", 5, [MessageFlag.SEEN])
     c._client.set_flags.assert_called_once_with([5], ["\\Seen"])
+
+
+def test_move_message_by_uid_uses_move_no_search():
+    c = _client()
+    c.move_message_by_uid("INBOX", 5, "Archive")
+    c._client.move.assert_called_once_with([5], "Archive")
+    c._client.search.assert_not_called()
+    c._client.expunge.assert_not_called()
+
+
+def test_find_archive_folder_prefers_archive():
+    c = _client()
+    c._client.list_folders.return_value = [
+        ((), b"/", "INBOX"),
+        ((), b"/", "Archive"),
+    ]
+    assert c.find_archive_folder() == "Archive"
+
+
+def test_archive_message_by_uid_moves_to_archive():
+    c = _client()
+    c._client.list_folders.return_value = [
+        ((), b"/", "INBOX"),
+        ((), b"/", "[Gmail]/All Mail"),
+    ]
+    c.archive_message_by_uid("INBOX", 5)
+    c._client.move.assert_called_once_with([5], "[Gmail]/All Mail")
+
+
+def test_legacy_move_message_uses_move_not_plain_expunge():
+    c = _client()
+    c._client.search.return_value = [9]
+    c.move_message("<m9@x>", "INBOX", "Archive")
+    c._client.move.assert_called_once_with([9], "Archive")
+    c._client.expunge.assert_not_called()
