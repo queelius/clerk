@@ -78,10 +78,14 @@ asyncio_mode = "auto"
 addopts = "-v --tb=short"
 
 [tool.coverage.run]
-source = ["src/clerk"]
+source = ["clerk"]
 branch = true
 
 [tool.coverage.report]
+show_missing = true
+# Floor set a few points below the measured total so honest refactors do not
+# trip it, but a real coverage regression does. Run: pytest --cov=clerk
+fail_under = 74
 exclude_lines = [
     "pragma: no cover",
     "if TYPE_CHECKING:",
