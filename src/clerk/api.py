@@ -409,7 +409,10 @@ class ClerkAPI:
         try:
             result = await client.send_async(draft)
         except Exception:
-            self.cache.finalize_send(send_id, "failed", None)
+            try:
+                self.cache.finalize_send(send_id, "failed", None)
+            except Exception as e:
+                print(f"Warning: send_log finalize failed: {e}", file=sys.stderr)
             raise
 
         if result.success:
@@ -429,7 +432,10 @@ class ClerkAPI:
                     file=sys.stderr,
                 )
         else:
-            self.cache.finalize_send(send_id, "failed", None)
+            try:
+                self.cache.finalize_send(send_id, "failed", None)
+            except Exception as e:
+                print(f"Warning: send_log finalize failed: {e}", file=sys.stderr)
 
         return result
 

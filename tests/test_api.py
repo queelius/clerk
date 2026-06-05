@@ -862,6 +862,17 @@ class TestSendReservation:
         assert result.success
         assert self._count(cache) == 1
 
+    def test_failed_send_with_finalize_error_still_returns_result(self, api, cache, monkeypatch):
+        # A finalize failure on an already-failed send must not turn the clean
+        # failure into an unhandled exception.
+        self._fake_smtp(monkeypatch, success=False)
+        monkeypatch.setattr(
+            cache, "finalize_send", MagicMock(side_effect=RuntimeError("disk full"))
+        )
+        d = api.create_draft(to=["x@example.com"], subject="s", body="b")
+        result = api.send_draft(d.draft_id)  # must not raise
+        assert result.success is False
+
 
 class TestStatusEnrichment:
     """clerk_status (via get_status) reports staleness and a cache summary."""
