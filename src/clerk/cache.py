@@ -623,7 +623,7 @@ class Cache:
             conn.execute(
                 """
                 UPDATE messages
-                SET body_text = ?, body_html = ?, body_fetched_at = ?
+                SET body_text = ?, body_html = ?, body_fetched_at = ?, body_skipped = 0
                 WHERE message_id = ?
                 """,
                 (body_text, body_html, datetime.now(UTC).isoformat(), message_id),
@@ -754,6 +754,10 @@ class Cache:
                 "SELECT MAX(value) FROM cache_meta WHERE key LIKE 'inbox_sync_%'"
             ).fetchone()[0]
 
+            skipped = conn.execute(
+                "SELECT COUNT(*) FROM messages WHERE body_skipped = 1"
+            ).fetchone()[0]
+
             # Get file size
             cache_size = self.db_path.stat().st_size if self.db_path.exists() else 0
 
@@ -763,6 +767,7 @@ class Cache:
                 oldest_message=datetime.fromisoformat(oldest) if oldest else None,
                 newest_message=datetime.fromisoformat(newest) if newest else None,
                 cache_size_bytes=cache_size,
+                body_skipped_count=skipped,
                 last_sync=datetime.fromisoformat(last_sync) if last_sync else None,
             )
 

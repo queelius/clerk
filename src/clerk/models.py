@@ -190,6 +190,7 @@ class CacheStats(BaseModel):
     oldest_message: datetime | None
     newest_message: datetime | None
     cache_size_bytes: int
+    body_skipped_count: int = 0
     last_sync: datetime | None
 
 

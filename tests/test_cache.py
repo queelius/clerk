@@ -778,3 +778,24 @@ def test_delete_by_uid(tmp_path):
     cache.store_message(_msg(6, "<d6@x>"))
     cache.delete_by_uid("acct", "INBOX", 6)
     assert cache.get_message("<d6@x>") is None
+
+
+def test_get_stats_counts_body_skipped(tmp_path):
+    cache = Cache(db_path=tmp_path / "c.db")
+    normal = _msg(70, "<n70@x>", body_text="hi")
+    skipped = _msg(71, "<s71@x>")
+    skipped.body_skipped = True
+    cache.store_message(normal)
+    cache.store_message(skipped)
+    assert cache.get_stats().body_skipped_count == 1
+
+
+def test_update_body_clears_body_skipped(tmp_path):
+    cache = Cache(db_path=tmp_path / "c.db")
+    skipped = _msg(72, "<s72@x>")
+    skipped.body_skipped = True
+    cache.store_message(skipped)
+    cache.update_body("<s72@x>", "recovered text", None)
+    got = cache.get_message("<s72@x>")
+    assert got.body_text == "recovered text"
+    assert got.body_skipped is False
