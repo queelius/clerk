@@ -29,6 +29,7 @@ from .models import (
     MessageFlag,
     SendResult,
     UnreadCounts,
+    flags_to_bitmask,
 )
 from .smtp_client import SmtpClient
 
@@ -558,6 +559,39 @@ class ClerkAPI:
         if msg.body_text is None and msg.body_html:
             msg.body_text = html_to_text(msg.body_html)
 
+    def _reconcile_recent(
+        self, client: Any, account_name: str, folder: str
+    ) -> dict[str, int]:
+        """Reconcile flags and expunges for the most-recent cached UIDs.
+
+        Re-fetches FLAGS for the recent window (config reconcile_window). UIDs
+        the server returns get their flags corrected when they differ; UIDs it
+        omits were expunged elsewhere and are deleted. Bounded to the recent
+        window; drift on older mail is corrected only by a full sync. A single
+        FETCH FLAGS gives both halves (returned = update, absent = delete).
+        """
+        window = self.config.cache.reconcile_window
+        if window <= 0:
+            return {"reconciled": 0, "expunged": 0}
+        cached = self.cache.get_recent_uid_flags(account_name, folder, window)
+        if not cached:
+            return {"reconciled": 0, "expunged": 0}
+
+        server_flags = client.fetch_flags(folder, list(cached.keys()))
+        reconciled = 0
+        expunged = 0
+        for uid, cached_mask in cached.items():
+            if uid in server_flags:
+                if flags_to_bitmask(server_flags[uid]) != cached_mask:
+                    self.cache.update_flags_by_uid(
+                        account_name, folder, uid, server_flags[uid]
+                    )
+                    reconciled += 1
+            else:
+                self.cache.delete_by_uid(account_name, folder, uid)
+                expunged += 1
+        return {"reconciled": reconciled, "expunged": expunged}
+
     def sync_folder(
         self,
         account: str | None = None,
@@ -585,6 +619,10 @@ class ClerkAPI:
         highest_uid = since_uid
 
         with get_imap_client(account_name) as client:
+            # 0. Reconcile flags and expunges for the recent cached window
+            #    (changes made on another device since the last sync).
+            recon = self._reconcile_recent(client, account_name, folder)
+
             # 1. Retry UIDs that failed to parse on a previous sync.
             dl_uids = self.cache.get_deadletter_uids(account_name, folder)
             if dl_uids:
@@ -624,6 +662,8 @@ class ClerkAPI:
 
         return {
             "synced": synced,
+            "reconciled": recon["reconciled"],
+            "expunged": recon["expunged"],
             "account": account_name,
             "folder": folder,
             "last_uid": highest_uid,

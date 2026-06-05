@@ -9,7 +9,7 @@ from clerk.api import ClerkAPI, get_api, html_to_text
 from clerk.cache import Cache
 from clerk.config import AccountConfig, ClerkConfig, FromAddress, ImapConfig, SmtpConfig
 from clerk.drafts import DraftManager
-from clerk.models import Address, Message
+from clerk.models import Address, Message, MessageFlag
 
 
 @pytest.fixture
@@ -678,3 +678,69 @@ class TestEagerBodies:
                 "SELECT body_skipped FROM messages WHERE message_id='<e4@x>'"
             ).fetchone()
         assert row["body_skipped"] == 1
+
+
+class TestReconcile:
+    """sync_folder reconciles flags and expunges for the recent cached window."""
+
+    def _store(self, cache, uid, flags=None):
+        cache.store_message(
+            Message(
+                uid=uid,
+                message_id=f"<r{uid}@x>",
+                conv_id=f"rc{uid}",
+                account="test",
+                folder="INBOX",
+                **{"from": Address(addr="a@x.com")},
+                to=[Address(addr="t@x.com")],
+                subject="s",
+                date=datetime.now(UTC),
+                flags=flags or [],
+                headers_fetched_at=datetime.now(UTC),
+            )
+        )
+
+    def _client(self, monkeypatch, flags_by_uid):
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.search_uids.return_value = []  # no new mail this sync
+        mock_client.fetch_flags.return_value = flags_by_uid
+        monkeypatch.setattr("clerk.api.get_imap_client", lambda _: mock_client)
+        return mock_client
+
+    def test_reconcile_updates_changed_flags(self, api, cache, monkeypatch):
+        self._store(cache, 5, flags=[])  # unread in cache
+        self._client(monkeypatch, {5: [MessageFlag.SEEN]})  # read on the server
+        api.sync_folder(account="test", folder="INBOX")
+        assert MessageFlag.SEEN in cache.get_message("<r5@x>").flags
+
+    def test_reconcile_deletes_expunged_ghost(self, api, cache, monkeypatch):
+        self._store(cache, 6)
+        self._client(monkeypatch, {})  # server returns nothing -> uid 6 expunged
+        api.sync_folder(account="test", folder="INBOX")
+        assert cache.get_message("<r6@x>") is None
+
+    def test_reconcile_bounded_by_window(self, api, cache, monkeypatch):
+        for u in (1, 2, 3):
+            self._store(cache, u)
+        monkeypatch.setattr(api.config.cache, "reconcile_window", 2)
+        mock_client = self._client(monkeypatch, {2: [], 3: []})
+        api.sync_folder(account="test", folder="INBOX")
+        args, _ = mock_client.fetch_flags.call_args
+        assert set(args[1]) == {2, 3}  # only the 2 most-recent UIDs
+
+    def test_reconcile_disabled_when_window_zero(self, api, cache, monkeypatch):
+        self._store(cache, 8)
+        monkeypatch.setattr(api.config.cache, "reconcile_window", 0)
+        mock_client = self._client(monkeypatch, {})
+        api.sync_folder(account="test", folder="INBOX")
+        mock_client.fetch_flags.assert_not_called()
+
+    def test_reconcile_skips_unchanged_flags(self, api, cache, monkeypatch):
+        self._store(cache, 9, flags=[MessageFlag.SEEN])
+        self._client(monkeypatch, {9: [MessageFlag.SEEN]})  # unchanged
+        spy = MagicMock()
+        monkeypatch.setattr(cache, "update_flags_by_uid", spy)
+        api.sync_folder(account="test", folder="INBOX")
+        spy.assert_not_called()
