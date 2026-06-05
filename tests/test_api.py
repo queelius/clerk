@@ -796,6 +796,56 @@ class TestPrune:
         assert cache.get_message("<p91@x>") is None
 
 
+class TestSendReservation:
+    """Sends are reserved before SMTP so the rate limit cannot be bypassed by a
+    finalize/audit-log failure, and failed sends do not count."""
+
+    def _fake_smtp(self, monkeypatch, success):
+        from clerk.models import SendResult
+
+        class FakeSmtp:
+            def __init__(self, name, config):
+                pass
+
+            async def send_async(self, draft):
+                return SendResult(
+                    success=success,
+                    message_id="<sent@x>" if success else None,
+                    error=None if success else "smtp boom",
+                )
+
+        monkeypatch.setattr("clerk.api.SmtpClient", FakeSmtp)
+
+    def _count(self, cache):
+        from datetime import timedelta
+
+        return cache.count_sends_since("test", datetime.now(UTC) - timedelta(hours=1))
+
+    def test_successful_send_counts_as_sent(self, api, cache, monkeypatch):
+        self._fake_smtp(monkeypatch, success=True)
+        d = api.create_draft(to=["x@example.com"], subject="s", body="b")
+        result = api.send_draft(d.draft_id)
+        assert result.success
+        assert self._count(cache) == 1
+
+    def test_failed_send_not_counted(self, api, cache, monkeypatch):
+        self._fake_smtp(monkeypatch, success=False)
+        d = api.create_draft(to=["x@example.com"], subject="s", body="b")
+        result = api.send_draft(d.draft_id)
+        assert not result.success
+        assert self._count(cache) == 0
+
+    def test_send_counted_even_if_finalize_fails(self, api, cache, monkeypatch):
+        self._fake_smtp(monkeypatch, success=True)
+        monkeypatch.setattr(
+            cache, "finalize_send", MagicMock(side_effect=RuntimeError("disk full"))
+        )
+        d = api.create_draft(to=["x@example.com"], subject="s", body="b")
+        result = api.send_draft(d.draft_id)
+        assert result.success
+        assert self._count(cache) == 1  # the pending reservation counts
+
+
 class TestStatusEnrichment:
     """clerk_status (via get_status) reports staleness and a cache summary."""
 

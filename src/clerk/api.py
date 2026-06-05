@@ -393,24 +393,31 @@ class ClerkAPI:
         if not allowed:
             return SendResult(success=False, error=error)
 
+        # Reserve a send_log slot BEFORE sending so the send counts against the
+        # rate limit immediately. A finalize failure afterwards cannot un-count
+        # it (the pending row already counts); a failed send is finalized to
+        # 'failed' and so does not count.
+        send_id = self.cache.reserve_send(
+            account=name,
+            to=draft.to,
+            cc=draft.cc,
+            bcc=draft.bcc,
+            subject=draft.subject,
+        )
+
         client = SmtpClient(name, account_config)
-        result = await client.send_async(draft)
+        try:
+            result = await client.send_async(draft)
+        except Exception:
+            self.cache.finalize_send(send_id, "failed", None)
+            raise
 
         if result.success:
-            # Audit log is best-effort: a disk-full error here should not
-            # swallow a successful send. Log to stderr and continue.
             try:
-                self.cache.log_send(
-                    account=name,
-                    to=draft.to,
-                    cc=draft.cc,
-                    bcc=draft.bcc,
-                    subject=draft.subject,
-                    message_id=result.message_id,
-                )
+                self.cache.finalize_send(send_id, "sent", result.message_id)
             except Exception as e:
                 print(
-                    f"Warning: audit log write failed after send: {e}",
+                    f"Warning: send_log finalize failed after send: {e}",
                     file=sys.stderr,
                 )
 
@@ -421,6 +428,8 @@ class ClerkAPI:
                     f"Warning: draft delete failed after send: {e}",
                     file=sys.stderr,
                 )
+        else:
+            self.cache.finalize_send(send_id, "failed", None)
 
         return result
 
