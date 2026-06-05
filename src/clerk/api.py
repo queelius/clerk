@@ -704,27 +704,41 @@ class ClerkAPI:
         self.cache.clear()
 
     def get_status(self) -> dict[str, Any]:
-        """Get overall status: version + per-account connection health."""
+        """Overall status: version, per-account connection + freshness, cache summary."""
         from . import __version__
 
-        status: dict[str, Any] = {
-            "version": __version__,
-            "accounts": {},
-        }
+        freshness = self.config.cache.inbox_freshness_min
+        now = datetime.now(UTC)
+        status: dict[str, Any] = {"version": __version__, "accounts": {}}
 
         for name in self.config.accounts:
+            acct: dict[str, Any] = {}
             try:
                 with get_imap_client(name) as client:
-                    status["accounts"][name] = {
-                        "connected": True,
-                        "folders": len(client.list_folders()),
-                    }
+                    acct["connected"] = True
+                    acct["folders"] = len(client.list_folders())
             except Exception as e:
-                status["accounts"][name] = {
-                    "connected": False,
-                    "error": str(e),
-                }
+                acct["connected"] = False
+                acct["error"] = str(e)
+            last_sync = self.cache.get_last_sync(name)
+            acct["last_sync"] = last_sync.isoformat() if last_sync else None
+            acct["stale"] = (
+                last_sync is None or (now - last_sync) > timedelta(minutes=freshness)
+            )
+            status["accounts"][name] = acct
 
+        stats = self.cache.get_stats()
+        status["cache"] = {
+            "message_count": stats.message_count,
+            "body_skipped_count": stats.body_skipped_count,
+            "oldest_message": (
+                stats.oldest_message.isoformat() if stats.oldest_message else None
+            ),
+            "newest_message": (
+                stats.newest_message.isoformat() if stats.newest_message else None
+            ),
+            "cache_size_bytes": stats.cache_size_bytes,
+        }
         return status
 
 

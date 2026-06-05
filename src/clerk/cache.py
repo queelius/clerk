@@ -696,6 +696,11 @@ class Cache:
                 (f"inbox_sync_{account}", datetime.now(UTC).isoformat()),
             )
 
+    def get_last_sync(self, account: str) -> datetime | None:
+        """The last time this account was synced, or None if never."""
+        raw = self.get_meta(f"inbox_sync_{account}")
+        return datetime.fromisoformat(raw) if raw else None
+
     def get_meta(self, key: str) -> str | None:
         """Get a value from cache_meta."""
         with self._connect() as conn:

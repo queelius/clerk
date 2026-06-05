@@ -751,3 +751,43 @@ class TestReconcile:
         monkeypatch.setattr(cache, "update_flags_by_uid", spy)
         api.sync_folder(account="test", folder="INBOX")
         spy.assert_not_called()
+
+
+class TestStatusEnrichment:
+    """clerk_status (via get_status) reports staleness and a cache summary."""
+
+    def _mock_imap(self, monkeypatch):
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.list_folders.return_value = []
+        monkeypatch.setattr("clerk.api.get_imap_client", lambda _: mock_client)
+
+    def test_status_reports_fresh_after_sync(self, api, cache, monkeypatch):
+        self._mock_imap(monkeypatch)
+        cache.mark_inbox_synced("test")
+        status = api.get_status()
+        assert status["accounts"]["test"]["last_sync"] is not None
+        assert status["accounts"]["test"]["stale"] is False
+
+    def test_status_reports_stale_when_old(self, api, cache, monkeypatch):
+        from datetime import timedelta
+
+        self._mock_imap(monkeypatch)
+        old = (datetime.now(UTC) - timedelta(days=1)).isoformat()
+        cache.set_meta("inbox_sync_test", old)
+        status = api.get_status()
+        assert status["accounts"]["test"]["stale"] is True
+
+    def test_status_includes_cache_summary(self, api, cache, monkeypatch):
+        self._mock_imap(monkeypatch)
+        m = Message(
+            uid=80, message_id="<c80@x>", conv_id="cc80", account="test", folder="INBOX",
+            **{"from": Address(addr="a@x.com")}, to=[Address(addr="t@x.com")],
+            subject="s", date=datetime.now(UTC), body_text="hi",
+            headers_fetched_at=datetime.now(UTC),
+        )
+        cache.store_message(m)
+        status = api.get_status()
+        assert status["cache"]["message_count"] == 1
+        assert "body_skipped_count" in status["cache"]

@@ -799,3 +799,15 @@ def test_update_body_clears_body_skipped(tmp_path):
     got = cache.get_message("<s72@x>")
     assert got.body_text == "recovered text"
     assert got.body_skipped is False
+
+
+# ---------------------------------------------------------------------------
+# Task 3: get_last_sync
+# ---------------------------------------------------------------------------
+
+
+def test_get_last_sync_none_then_set(tmp_path):
+    cache = Cache(db_path=tmp_path / "c.db")
+    assert cache.get_last_sync("acct") is None
+    cache.mark_inbox_synced("acct")
+    assert cache.get_last_sync("acct") is not None
