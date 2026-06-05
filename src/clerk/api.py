@@ -537,6 +537,25 @@ class ClerkAPI:
     # Sync Operations
     # =========================================================================
 
+    def _prepare_body_for_storage(self, msg: Message) -> None:
+        """Make a fetched body cache-ready before store.
+
+        - Oversize guard: bodies whose combined text+html length exceeds the
+          configured cap are dropped (body_skipped=True) and fetched on demand
+          on explicit read.
+        - FTS guard: if only HTML is present (common with Exchange/Outlook),
+          derive a plain-text body so the FTS index has searchable content.
+        """
+        cap = self.config.cache.body_max_bytes
+        total = len(msg.body_text or "") + len(msg.body_html or "")
+        if total > cap:
+            msg.body_text = None
+            msg.body_html = None
+            msg.body_skipped = True
+            return
+        if msg.body_text is None and msg.body_html:
+            msg.body_text = html_to_text(msg.body_html)
+
     def sync_folder(
         self,
         account: str | None = None,
@@ -560,10 +579,11 @@ class ClerkAPI:
             messages, highest_uid = client.fetch_messages_since_uid(
                 folder=folder,
                 since_uid=since_uid,
-                fetch_bodies=False,
+                fetch_bodies=True,
             )
 
             for msg in messages:
+                self._prepare_body_for_storage(msg)
                 self.cache.store_message(msg)
 
         if highest_uid > since_uid:

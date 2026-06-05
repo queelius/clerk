@@ -549,7 +549,7 @@ class TestSyncFolder:
         mock_client.fetch_messages_since_uid.assert_called_once_with(
             folder="INBOX",
             since_uid=50,
-            fetch_bodies=False,
+            fetch_bodies=True,
         )
 
     def test_full_sync_ignores_sync_state(self, api, cache, monkeypatch):
@@ -567,7 +567,7 @@ class TestSyncFolder:
         mock_client.fetch_messages_since_uid.assert_called_once_with(
             folder="INBOX",
             since_uid=0,
-            fetch_bodies=False,
+            fetch_bodies=True,
         )
 
     def test_sync_does_not_update_state_if_no_new_messages(self, api, cache, monkeypatch):
@@ -586,3 +586,76 @@ class TestSyncFolder:
         state = cache.get_sync_state("test", "INBOX")
         assert state is not None
         assert state["last_uid"] == 50
+
+
+class TestEagerBodies:
+    """Sync fetches full bodies and makes them searchable (FTS completeness)."""
+
+    def _mock_client(self, monkeypatch, messages, highest_uid):
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.fetch_messages_since_uid.return_value = (messages, highest_uid)
+        monkeypatch.setattr("clerk.api.get_imap_client", lambda _: mock_client)
+        return mock_client
+
+    def _msg(self, uid, mid, **kw):
+        return Message(
+            uid=uid,
+            message_id=mid,
+            conv_id=f"conv{uid}",
+            account="test",
+            folder="INBOX",
+            **{"from": Address(addr="alice@example.com", name="Alice")},
+            to=[Address(addr="test@example.com")],
+            date=datetime.now(UTC),
+            subject="Subject",
+            headers_fetched_at=datetime.now(UTC),
+            body_fetched_at=datetime.now(UTC),
+            **kw,
+        )
+
+    def test_sync_requests_bodies_eagerly(self, api, monkeypatch):
+        mock_client = self._mock_client(monkeypatch, [], 0)
+        api.sync_folder(account="test", folder="INBOX")
+        _, kwargs = mock_client.fetch_messages_since_uid.call_args
+        assert kwargs["fetch_bodies"] is True
+
+    def test_synced_body_is_full_text_searchable(self, api, cache, monkeypatch):
+        msg = self._msg(40, "<e1@x>", body_text="the quarterly pineapple report")
+        self._mock_client(monkeypatch, [msg], 40)
+        api.sync_folder(account="test", folder="INBOX")
+        rows = cache.execute_readonly_sql(
+            "SELECT m.message_id FROM messages_fts f "
+            "JOIN messages m ON m.rowid = f.rowid "
+            "WHERE messages_fts MATCH 'pineapple'"
+        )
+        assert any(r["message_id"] == "<e1@x>" for r in rows)
+
+    def test_html_only_body_gets_text_for_search(self, api, cache, monkeypatch):
+        msg = self._msg(41, "<e2@x>", body_text=None, body_html="<p>secret mango harvest</p>")
+        self._mock_client(monkeypatch, [msg], 41)
+        api.sync_folder(account="test", folder="INBOX")
+        stored = cache.get_message("<e2@x>")
+        assert stored is not None
+        assert "mango" in (stored.body_text or "")
+        rows = cache.execute_readonly_sql(
+            "SELECT m.message_id FROM messages_fts f "
+            "JOIN messages m ON m.rowid = f.rowid "
+            "WHERE messages_fts MATCH 'mango'"
+        )
+        assert any(r["message_id"] == "<e2@x>" for r in rows)
+
+    def test_oversized_body_is_skipped(self, api, cache, monkeypatch):
+        big = "x" * 2_000_000  # exceeds the 1_000_000 default cap
+        msg = self._msg(42, "<e3@x>", body_text=big)
+        self._mock_client(monkeypatch, [msg], 42)
+        api.sync_folder(account="test", folder="INBOX")
+        stored = cache.get_message("<e3@x>")
+        assert stored is not None
+        assert stored.body_text is None
+        with cache._connect() as conn:
+            row = conn.execute(
+                "SELECT body_skipped FROM messages WHERE message_id='<e3@x>'"
+            ).fetchone()
+        assert row["body_skipped"] == 1
