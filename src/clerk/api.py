@@ -47,12 +47,12 @@ def html_to_text(html_body: str) -> str:
         tag.decompose()
     for br in soup.find_all("br"):
         br.insert_before("\n")
-        if br.string:
-            br.unwrap()
+        if br.string:  # type: ignore[union-attr]
+            br.unwrap()  # type: ignore[union-attr]
         else:
             br.replace_with("")
     for block in soup.find_all(["p", "div"]):
-        block.append("\n")
+        block.append("\n")  # type: ignore[union-attr]
     text = soup.get_text()
     lines = [re.sub(r"[ \t]+", " ", line).strip() for line in text.splitlines()]
     text = re.sub(r"\n{3,}", "\n\n", "\n".join(lines))
