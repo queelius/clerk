@@ -57,7 +57,14 @@ def parse_address_list(header: str | None) -> list[Address]:
     addresses = []
     for addr_str in header.split(","):
         addr_str = addr_str.strip()
-        if addr_str:
+        if not addr_str:
+            continue
+        if "<" not in addr_str and "@" not in addr_str:
+            # Bare display name with no email (a malformed M365 quirk):
+            # email.utils.parseaddr would keep only the first word, so
+            # preserve the whole token as the name.
+            addresses.append(Address(addr="", name=addr_str))
+        else:
             parsed = parse_address(email.utils.parseaddr(addr_str))
             if parsed:
                 addresses.append(parsed)
