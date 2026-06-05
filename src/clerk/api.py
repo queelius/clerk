@@ -7,13 +7,14 @@ thin adapters on top.
 
 import asyncio
 import hashlib
-import html
 import json
 import re
 import secrets
 import sys
 from datetime import UTC, datetime, timedelta
 from typing import Any
+
+from bs4 import BeautifulSoup
 
 from .cache import Cache, get_cache
 from .config import ClerkConfig, ensure_dirs, get_config
@@ -35,17 +36,24 @@ from .smtp_client import SmtpClient
 
 
 def html_to_text(html_body: str) -> str:
-    """Convert HTML email body to readable plain text.
+    """Convert an HTML email body to readable plain text.
 
-    Handles the common case of Exchange/Outlook HTML-only emails.
+    Handles the common case of Exchange/Outlook HTML-only emails using a real
+    parser: scripts/styles are dropped, <br> and block elements become line
+    breaks, entities are decoded, and runs of whitespace are collapsed.
     """
-    text = re.sub(r"<style[^>]*>.*?</style>", "", html_body, flags=re.DOTALL)
-    text = re.sub(r"<script[^>]*>.*?</script>", "", text, flags=re.DOTALL)
-    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
-    text = re.sub(r"</p>", "\n\n", text, flags=re.IGNORECASE)
-    text = re.sub(r"</div>", "\n", text, flags=re.IGNORECASE)
-    text = re.sub(r"<[^>]+>", "", text)
-    text = html.unescape(text)
+    soup = BeautifulSoup(html_body, "html.parser")
+    for tag in soup(["script", "style"]):
+        tag.decompose()
+    for br in soup.find_all("br"):
+        br.insert_before("\n")
+        if br.string:
+            br.unwrap()
+        else:
+            br.replace_with("")
+    for block in soup.find_all(["p", "div"]):
+        block.append("\n")
+    text = soup.get_text()
     lines = [re.sub(r"[ \t]+", " ", line).strip() for line in text.splitlines()]
     text = re.sub(r"\n{3,}", "\n\n", "\n".join(lines))
     return text.strip()

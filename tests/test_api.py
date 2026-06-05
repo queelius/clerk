@@ -96,6 +96,13 @@ class TestHtmlToText:
         assert "can\u2019t believe" in result
         assert "<" not in result
 
+    def test_nested_blocks_separate_lines(self):
+        html = "<div><p>First para</p><p>Second para</p></div>"
+        result = html_to_text(html)
+        assert "First para" in result
+        assert "Second para" in result
+        assert "First paraSecond para" not in result
+
 
 class TestClerkAPIInit:
     """Tests for ClerkAPI initialization."""
