@@ -224,7 +224,7 @@ class Cache:
             conv_id=row["conv_id"],
             account=row["account"],
             folder=row["folder"],
-            **{"from": Address(addr=row["from_addr"], name=row["from_name"] or "")},  # type: ignore[arg-type]
+            **{"from": Address(addr=row["from_addr"], name=row["from_name"] or "")},
             to=[Address(**a) for a in json.loads(row["to_json"])],
             cc=[Address(**a) for a in json.loads(row["cc_json"])],
             reply_to=[Address(**a) for a in json.loads(row["reply_to_json"])],
@@ -232,6 +232,7 @@ class Cache:
             date=datetime.fromisoformat(row["date_utc"]),
             body_text=row["body_text"],
             body_html=row["body_html"],
+            body_skipped=bool(row["body_skipped"]),
             flags=bitmask_to_flags(row["flags"]),
             attachments=[Attachment(**a) for a in json.loads(row["attachments_json"])],
             in_reply_to=row["in_reply_to"],

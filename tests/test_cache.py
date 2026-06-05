@@ -712,3 +712,13 @@ def test_store_message_persists_body_skipped_false(tmp_path):
             "SELECT body_skipped FROM messages WHERE account='acct' AND folder='INBOX' AND uid=31"
         ).fetchone()
     assert row["body_skipped"] == 0
+
+
+def test_get_message_round_trips_body_skipped(tmp_path):
+    cache = Cache(db_path=tmp_path / "c.db")
+    msg = _msg(33, "<bsr@x>")
+    msg.body_skipped = True
+    cache.store_message(msg)
+    got = cache.get_message("<bsr@x>")
+    assert got is not None
+    assert got.body_skipped is True
