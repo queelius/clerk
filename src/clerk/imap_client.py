@@ -492,6 +492,42 @@ class ImapClient:
             uids = self.client.search(["ALL"])
         return sorted(uids)
 
+    def fetch_uids(
+        self,
+        folder: str,
+        uids: Sequence[int],
+        fetch_bodies: bool = True,
+    ) -> tuple[list[Message], list[int]]:
+        """Fetch and parse a specific set of UIDs.
+
+        Returns (parsed_messages, failed_uids). failed_uids are UIDs the server
+        returned but that could not be parsed (so the caller can dead-letter
+        them). UIDs the server does not return (for example, expunged between
+        search and fetch) appear in neither list. Read-only select.
+        """
+        if not uids:
+            return [], []
+        self.client.select_folder(folder, readonly=True)
+        fetch_items = ["FLAGS", "ENVELOPE", "INTERNALDATE", "RFC822.SIZE"]
+        fetch_items.append("BODY.PEEK[]" if fetch_bodies else "BODY.PEEK[HEADER]")
+        fetch_data = self.client.fetch(list(uids), fetch_items)
+        messages: list[Message] = []
+        failed: list[int] = []
+        now = datetime.now(UTC)
+        for uid in sorted(fetch_data.keys()):
+            try:
+                msg = self._parse_message(uid, fetch_data[uid], folder, fetch_bodies, now)
+                if msg:
+                    messages.append(msg)
+                else:
+                    failed.append(uid)
+            except Exception as e:
+                import sys
+
+                print(f"Warning: failed to parse message {uid}: {e}", file=sys.stderr)
+                failed.append(uid)
+        return messages, failed
+
     def fetch_messages_since_uid(
         self,
         folder: str = "INBOX",
