@@ -476,6 +476,22 @@ class ImapClient:
             body_fetched_at=fetch_time if has_body else None,
         )
 
+    def search_uids(self, folder: str = "INBOX", since_uid: int = 0) -> list[int]:
+        """Return all UIDs in the folder above since_uid, ascending.
+
+        since_uid=0 returns every UID (full sync). There is no cap: the caller
+        pages the subsequent fetch. The UID range form `since+1:*` can echo the
+        boundary UID on some servers, so results are filtered to be strictly
+        greater than since_uid. Read-only select.
+        """
+        self.client.select_folder(folder, readonly=True)
+        if since_uid > 0:
+            uids = self.client.search(["UID", f"{since_uid + 1}:*"])
+            uids = [u for u in uids if u > since_uid]
+        else:
+            uids = self.client.search(["ALL"])
+        return sorted(uids)
+
     def fetch_messages_since_uid(
         self,
         folder: str = "INBOX",
