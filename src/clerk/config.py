@@ -141,6 +141,11 @@ class CacheConfig(BaseModel):
     window_days: int = Field(default=7, ge=1, le=365)
     inbox_freshness_min: int = Field(default=5, ge=1)
     body_freshness_min: int = Field(default=60, ge=1)
+    body_max_bytes: int = Field(
+        default=1_000_000,
+        ge=1024,
+        description="Bodies larger than this are not cached (fetched on demand)",
+    )
 
 
 class SendConfig(BaseModel):

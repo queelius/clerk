@@ -113,6 +113,12 @@ class TestCacheConfig:
         with pytest.raises(ValueError):
             CacheConfig(window_days=400)  # Must be <= 365
 
+    def test_cache_config_body_max_bytes_default(self):
+        assert CacheConfig().body_max_bytes == 1_000_000
+
+    def test_cache_config_body_max_bytes_custom(self):
+        assert CacheConfig(body_max_bytes=2048).body_max_bytes == 2048
+
 
 class TestSendConfig:
     def test_defaults(self):
