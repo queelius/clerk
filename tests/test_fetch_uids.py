@@ -95,3 +95,22 @@ def test_fetch_flags_maps_returned_uids_only():
     # FLAGS-only fetch (no body)
     args, _ = c._client.fetch.call_args
     assert args[1] == ["FLAGS"]
+
+
+def test_add_flags_by_uid_no_search():
+    c = _client()
+    c.add_flags_by_uid("INBOX", 5, [MessageFlag.SEEN])
+    c._client.add_flags.assert_called_once_with([5], ["\\Seen"])
+    c._client.search.assert_not_called()
+
+
+def test_remove_flags_by_uid():
+    c = _client()
+    c.remove_flags_by_uid("INBOX", 5, [MessageFlag.FLAGGED])
+    c._client.remove_flags.assert_called_once_with([5], ["\\Flagged"])
+
+
+def test_set_flags_by_uid():
+    c = _client()
+    c.set_flags_by_uid("INBOX", 5, [MessageFlag.SEEN])
+    c._client.set_flags.assert_called_once_with([5], ["\\Seen"])

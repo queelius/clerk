@@ -669,6 +669,27 @@ class ImapClient:
         imap_flags = model_flags_to_imap(flags)
         self.client.remove_flags([uid], imap_flags)
 
+    def add_flags_by_uid(
+        self, folder: str, uid: int, flags: Sequence[MessageFlag]
+    ) -> None:
+        """Add flags to a message by UID (no Message-ID search)."""
+        self.client.select_folder(folder)
+        self.client.add_flags([uid], model_flags_to_imap(flags))
+
+    def remove_flags_by_uid(
+        self, folder: str, uid: int, flags: Sequence[MessageFlag]
+    ) -> None:
+        """Remove flags from a message by UID (no Message-ID search)."""
+        self.client.select_folder(folder)
+        self.client.remove_flags([uid], model_flags_to_imap(flags))
+
+    def set_flags_by_uid(
+        self, folder: str, uid: int, flags: Sequence[MessageFlag]
+    ) -> None:
+        """Set flags on a message by UID (no Message-ID search)."""
+        self.client.select_folder(folder)
+        self.client.set_flags([uid], model_flags_to_imap(flags))
+
     def move_message(self, message_id: str, from_folder: str, to_folder: str) -> None:
         """Move a message to another folder."""
         self.client.select_folder(from_folder)
