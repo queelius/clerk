@@ -522,8 +522,12 @@ class ClerkAPI:
         """Move a message to another folder (server-first, cache best-effort)."""
         account_name, _ = self.config.get_account(account)
 
+        msg = self.cache.get_message(message_id)
         with get_imap_client(account_name) as client:
-            client.move_message(message_id, from_folder, to_folder)
+            if msg is not None and msg.uid is not None:
+                client.move_message_by_uid(msg.folder, msg.uid, to_folder)
+            else:
+                client.move_message(message_id, from_folder, to_folder)
 
         try:
             self.cache.move_message(message_id, to_folder)
@@ -538,8 +542,12 @@ class ClerkAPI:
         """Archive a message (server-first, cache best-effort)."""
         account_name, _ = self.config.get_account(account)
 
+        msg = self.cache.get_message(message_id)
         with get_imap_client(account_name) as client:
-            client.archive_message(message_id)
+            if msg is not None and msg.uid is not None:
+                client.archive_message_by_uid(msg.folder, msg.uid)
+            else:
+                client.archive_message(message_id)
 
         try:
             self.cache.move_message(message_id, "Archive")

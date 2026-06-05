@@ -292,7 +292,7 @@ class TestMessageActions:
         mock_client.add_flags_by_uid.assert_called_once()
 
     def test_archive_message(self, api, cache, sample_message, monkeypatch):
-        """Test archiving a message."""
+        """Test archiving a message uses the UID path when cached."""
         cache.store_message(sample_message)
 
         mock_client = MagicMock()
@@ -302,7 +302,20 @@ class TestMessageActions:
 
         api.archive_message("<msg123@example.com>")
 
-        mock_client.archive_message.assert_called_once()
+        mock_client.archive_message_by_uid.assert_called_once()
+        mock_client.archive_message.assert_not_called()
+
+    def test_move_uses_uid_when_cached(self, api, cache, sample_message, monkeypatch):
+        cache.store_message(sample_message)
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        monkeypatch.setattr("clerk.api.get_imap_client", lambda _: mock_client)
+
+        api.move_message("<msg123@example.com>", "Archive")
+
+        mock_client.move_message_by_uid.assert_called_once_with("INBOX", 1, "Archive")
+        mock_client.move_message.assert_not_called()
 
 
 class TestCacheOperations:
