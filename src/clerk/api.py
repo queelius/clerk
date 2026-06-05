@@ -564,10 +564,13 @@ class ClerkAPI:
         folder: str = "INBOX",
         full: bool = False,
     ) -> dict[str, Any]:
-        """Sync a folder from IMAP, fetching only new messages.
+        """Sync a folder from IMAP.
 
-        Advances sync state only when store succeeds; on store failure the
-        sync state is left alone so the next sync retries the same UIDs.
+        Pages new UIDs ascending, advancing sync_state after each chunk so an
+        interrupted sync resumes rather than skipping. Retries previously
+        dead-lettered (unparseable) UIDs first; records new parse failures in
+        the dead-letter set so a single bad message neither blocks the sync nor
+        is silently lost.
         """
         account_name, _ = self.config.get_account(account)
 
@@ -577,27 +580,50 @@ class ClerkAPI:
             if state:
                 since_uid = state["last_uid"]
 
+        chunk_size = self.config.cache.sync_chunk_size
+        synced = 0
+        highest_uid = since_uid
+
         with get_imap_client(account_name) as client:
-            messages, highest_uid = client.fetch_messages_since_uid(
-                folder=folder,
-                since_uid=since_uid,
-                fetch_bodies=True,
-            )
+            # 1. Retry UIDs that failed to parse on a previous sync.
+            dl_uids = self.cache.get_deadletter_uids(account_name, folder)
+            if dl_uids:
+                msgs, _failed = client.fetch_uids(folder, dl_uids, fetch_bodies=True)
+                stored: set[int] = set()
+                for msg in msgs:
+                    if msg.uid is None:
+                        continue
+                    self._prepare_body_for_storage(msg)
+                    self.cache.store_message(msg)
+                    self.cache.clear_deadletter(account_name, folder, msg.uid)
+                    stored.add(msg.uid)
+                    synced += 1
+                # Any dead-letter UID not stored this round (still unparseable,
+                # or expunged) ages out via the attempt cap.
+                for uid in dl_uids:
+                    if uid not in stored:
+                        self.cache.record_deadletter(account_name, folder, uid)
 
-            for msg in messages:
-                self._prepare_body_for_storage(msg)
-                self.cache.store_message(msg)
+            # 2. Page new UIDs above the watermark, ascending.
+            new_uids = client.search_uids(folder, since_uid)
+            for i in range(0, len(new_uids), chunk_size):
+                chunk = new_uids[i : i + chunk_size]
+                msgs, failed = client.fetch_uids(folder, chunk, fetch_bodies=True)
+                for msg in msgs:
+                    self._prepare_body_for_storage(msg)
+                    self.cache.store_message(msg)
+                    synced += 1
+                for uid in failed:
+                    self.cache.record_deadletter(account_name, folder, uid)
+                chunk_max = max(chunk)
+                if chunk_max > highest_uid:
+                    highest_uid = chunk_max
+                    self.cache.set_sync_state(account_name, folder, highest_uid)
 
-        if highest_uid > since_uid:
-            self.cache.set_sync_state(account_name, folder, highest_uid)
-
-        # Only mark the folder as "freshly synced" when we actually saw the
-        # server (not on partial-fetch failure before store). Storing above
-        # is inside the `with` block; reaching here means it completed.
         self.cache.mark_inbox_synced(account_name)
 
         return {
-            "synced": len(messages),
+            "synced": synced,
             "account": account_name,
             "folder": folder,
             "last_uid": highest_uid,

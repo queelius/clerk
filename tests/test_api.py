@@ -490,102 +490,105 @@ class TestGetApi:
 
 
 class TestSyncFolder:
-    """Tests for sync_folder operation."""
+    """sync_folder pages new UIDs ascending, advances the watermark per chunk,
+    and dead-letters parse failures so they are retried, not lost."""
 
-    def test_incremental_sync_returns_count(self, api, monkeypatch):
-        """Sync should return number of new messages fetched."""
+    def _client(self, monkeypatch, new_uids, fetch_result):
+        """fetch_result is a (messages, failed) tuple, or a callable(uids)->tuple."""
         mock_client = MagicMock()
         mock_client.__enter__ = MagicMock(return_value=mock_client)
         mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client.fetch_messages_since_uid.return_value = ([], 0)
+        mock_client.search_uids.return_value = new_uids
+        if callable(fetch_result):
+            mock_client.fetch_uids.side_effect = (
+                lambda folder, uids, fetch_bodies=True: fetch_result(list(uids))
+            )
+        else:
+            mock_client.fetch_uids.return_value = fetch_result
         monkeypatch.setattr("clerk.api.get_imap_client", lambda _: mock_client)
+        return mock_client
 
-        result = api.sync_folder(account="test", folder="INBOX")
-
-        assert result["synced"] == 0
-        assert result["account"] == "test"
-        assert result["folder"] == "INBOX"
-
-    def test_incremental_sync_updates_sync_state(self, api, cache, monkeypatch):
-        """Sync should update the last_uid in sync_state."""
-        msg = Message(
-            uid=1,
-            message_id="<msg1@example.com>",
-            conv_id="abc123",
+    def _msg(self, uid):
+        return Message(
+            uid=uid,
+            message_id=f"<m{uid}@x>",
+            conv_id=f"c{uid}",
             account="test",
             folder="INBOX",
-            **{"from": Address(addr="alice@example.com", name="Alice")},
-            to=[Address(addr="test@example.com", name="Test")],
-            subject="Test",
+            **{"from": Address(addr="a@x.com")},
+            to=[Address(addr="test@example.com")],
+            subject="s",
             date=datetime.now(UTC),
             headers_fetched_at=datetime.now(UTC),
         )
 
-        mock_client = MagicMock()
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client.fetch_messages_since_uid.return_value = ([msg], 100)
-        monkeypatch.setattr("clerk.api.get_imap_client", lambda _: mock_client)
+    def test_no_new_messages_returns_zero(self, api, monkeypatch):
+        self._client(monkeypatch, [], ([], []))
+        result = api.sync_folder(account="test", folder="INBOX")
+        assert result["synced"] == 0
+        assert result["account"] == "test"
+        assert result["folder"] == "INBOX"
 
+    def test_sync_stores_and_advances_watermark(self, api, cache, monkeypatch):
+        m = self._msg(100)
+        self._client(monkeypatch, [100], ([m], []))
         result = api.sync_folder(account="test", folder="INBOX")
         assert result["synced"] == 1
+        assert cache.get_sync_state("test", "INBOX")["last_uid"] == 100
 
-        state = cache.get_sync_state("test", "INBOX")
-        assert state is not None
-        assert state["last_uid"] == 100
-
-    def test_incremental_sync_uses_existing_uid(self, api, cache, monkeypatch):
-        """Sync should pass the last known UID to fetch_messages_since_uid."""
+    def test_search_uses_existing_watermark(self, api, cache, monkeypatch):
         cache.set_sync_state("test", "INBOX", 50)
-
-        mock_client = MagicMock()
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client.fetch_messages_since_uid.return_value = ([], 50)
-        monkeypatch.setattr("clerk.api.get_imap_client", lambda _: mock_client)
-
+        mock_client = self._client(monkeypatch, [], ([], []))
         api.sync_folder(account="test", folder="INBOX")
+        mock_client.search_uids.assert_called_once_with("INBOX", 50)
 
-        mock_client.fetch_messages_since_uid.assert_called_once_with(
-            folder="INBOX",
-            since_uid=50,
-            fetch_bodies=True,
-        )
-
-    def test_full_sync_ignores_sync_state(self, api, cache, monkeypatch):
-        """Full sync should ignore existing sync state and pass since_uid=0."""
+    def test_full_sync_ignores_watermark(self, api, cache, monkeypatch):
         cache.set_sync_state("test", "INBOX", 50)
-
-        mock_client = MagicMock()
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client.fetch_messages_since_uid.return_value = ([], 0)
-        monkeypatch.setattr("clerk.api.get_imap_client", lambda _: mock_client)
-
+        mock_client = self._client(monkeypatch, [], ([], []))
         api.sync_folder(account="test", folder="INBOX", full=True)
+        mock_client.search_uids.assert_called_once_with("INBOX", 0)
 
-        mock_client.fetch_messages_since_uid.assert_called_once_with(
-            folder="INBOX",
-            since_uid=0,
-            fetch_bodies=True,
-        )
-
-    def test_sync_does_not_update_state_if_no_new_messages(self, api, cache, monkeypatch):
-        """Sync should not update sync state when highest_uid hasn't changed."""
+    def test_no_new_messages_keeps_watermark(self, api, cache, monkeypatch):
         cache.set_sync_state("test", "INBOX", 50)
-
-        mock_client = MagicMock()
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
-        # highest_uid == since_uid means no new messages
-        mock_client.fetch_messages_since_uid.return_value = ([], 50)
-        monkeypatch.setattr("clerk.api.get_imap_client", lambda _: mock_client)
-
+        self._client(monkeypatch, [], ([], []))
         api.sync_folder(account="test", folder="INBOX")
+        assert cache.get_sync_state("test", "INBOX")["last_uid"] == 50
 
-        state = cache.get_sync_state("test", "INBOX")
-        assert state is not None
-        assert state["last_uid"] == 50
+    def test_paging_no_200_cap(self, api, cache, monkeypatch):
+        uids = list(range(1, 251))  # 250 messages, above the old 200 cap
+        msgs = {u: self._msg(u) for u in uids}
+        self._client(monkeypatch, uids, lambda chunk: ([msgs[u] for u in chunk], []))
+        result = api.sync_folder(account="test", folder="INBOX")
+        assert result["synced"] == 250
+        assert cache.get_stats().message_count == 250
+        assert cache.get_sync_state("test", "INBOX")["last_uid"] == 250
+
+    def test_fetch_is_chunked(self, api, cache, monkeypatch):
+        monkeypatch.setattr(api.config.cache, "sync_chunk_size", 2)
+        uids = [1, 2, 3, 4, 5]
+        msgs = {u: self._msg(u) for u in uids}
+        mock_client = self._client(
+            monkeypatch, uids, lambda chunk: ([msgs[u] for u in chunk], [])
+        )
+        api.sync_folder(account="test", folder="INBOX")
+        assert mock_client.fetch_uids.call_count == 3  # chunks of 2: (2,2,1)
+
+    def test_parse_failure_recorded_and_watermark_advances(self, api, cache, monkeypatch):
+        self._client(monkeypatch, [10], ([], [10]))  # uid 10 fails to parse
+        result = api.sync_folder(account="test", folder="INBOX")
+        assert result["synced"] == 0
+        assert 10 in cache.get_deadletter_uids("test", "INBOX")
+        # The bad message does not block sync: the watermark still advances.
+        assert cache.get_sync_state("test", "INBOX")["last_uid"] == 10
+
+    def test_deadletter_retried_and_cleared_on_success(self, api, cache, monkeypatch):
+        cache.record_deadletter("test", "INBOX", 10)
+        m = self._msg(10)
+        self._client(monkeypatch, [], ([m], []))  # no new uids; dl retry succeeds
+        result = api.sync_folder(account="test", folder="INBOX")
+        assert result["synced"] == 1
+        assert cache.get_deadletter_uids("test", "INBOX") == []
+        assert cache.get_message("<m10@x>") is not None
 
 
 class TestEagerBodies:
@@ -595,7 +598,8 @@ class TestEagerBodies:
         mock_client = MagicMock()
         mock_client.__enter__ = MagicMock(return_value=mock_client)
         mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client.fetch_messages_since_uid.return_value = (messages, highest_uid)
+        mock_client.search_uids.return_value = [m.uid for m in messages]
+        mock_client.fetch_uids.return_value = (messages, [])
         monkeypatch.setattr("clerk.api.get_imap_client", lambda _: mock_client)
         return mock_client
 
@@ -616,10 +620,12 @@ class TestEagerBodies:
         )
 
     def test_sync_requests_bodies_eagerly(self, api, monkeypatch):
-        mock_client = self._mock_client(monkeypatch, [], 0)
+        msg = self._msg(40, "<e0@x>", body_text="hi")
+        mock_client = self._mock_client(monkeypatch, [msg], 40)
         api.sync_folder(account="test", folder="INBOX")
-        _, kwargs = mock_client.fetch_messages_since_uid.call_args
-        assert kwargs["fetch_bodies"] is True
+        assert mock_client.fetch_uids.called
+        _, kwargs = mock_client.fetch_uids.call_args
+        assert kwargs.get("fetch_bodies") is True
 
     def test_synced_body_is_full_text_searchable(self, api, cache, monkeypatch):
         msg = self._msg(40, "<e1@x>", body_text="the quarterly pineapple report")
