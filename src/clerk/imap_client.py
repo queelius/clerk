@@ -690,6 +690,18 @@ class ImapClient:
         self.client.select_folder(folder)
         self.client.set_flags([uid], model_flags_to_imap(flags))
 
+    def _move_uid(self, from_folder: str, uid: int, to_folder: str) -> None:
+        """Move a single UID, atomically via the MOVE extension where the server
+        supports it, otherwise a scoped copy + delete + UID EXPUNGE (never a
+        plain EXPUNGE, which could purge other deleted messages in the folder)."""
+        self.client.select_folder(from_folder)
+        if self.client.has_capability("MOVE"):
+            self.client.move([uid], to_folder)
+        else:
+            self.client.copy([uid], to_folder)
+            self.client.delete_messages([uid])
+            self.client.uid_expunge([uid])
+
     def move_message(self, message_id: str, from_folder: str, to_folder: str) -> None:
         """Move a message to another folder."""
         self.client.select_folder(from_folder)
@@ -699,13 +711,11 @@ class ImapClient:
             raise ValueError(f"Message not found: {message_id}")
 
         uid = results[0]
-        self.client.move([uid], to_folder)
+        self._move_uid(from_folder, uid, to_folder)
 
     def move_message_by_uid(self, from_folder: str, uid: int, to_folder: str) -> None:
-        """Move a message by UID. Uses UID MOVE where the server supports it,
-        otherwise imapclient's properly-scoped copy+delete+expunge fallback."""
-        self.client.select_folder(from_folder)
-        self.client.move([uid], to_folder)
+        """Move a message by UID (atomic MOVE where supported, scoped fallback otherwise)."""
+        self._move_uid(from_folder, uid, to_folder)
 
     def find_archive_folder(self) -> str:
         """Resolve the archive folder name across providers (Gmail uses All Mail)."""

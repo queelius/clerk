@@ -149,3 +149,14 @@ def test_legacy_move_message_uses_move_not_plain_expunge():
     c.move_message("<m9@x>", "INBOX", "Archive")
     c._client.move.assert_called_once_with([9], "Archive")
     c._client.expunge.assert_not_called()
+
+
+def test_move_by_uid_fallback_without_move_capability():
+    c = _client()
+    c._client.has_capability.return_value = False
+    c.move_message_by_uid("INBOX", 5, "Archive")
+    c._client.copy.assert_called_once_with([5], "Archive")
+    c._client.delete_messages.assert_called_once_with([5])
+    c._client.uid_expunge.assert_called_once_with([5])
+    c._client.expunge.assert_not_called()  # scoped UID EXPUNGE, not plain
+    c._client.move.assert_not_called()
