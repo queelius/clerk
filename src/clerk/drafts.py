@@ -2,11 +2,10 @@
 
 import json
 import secrets
-import sqlite3
 from datetime import UTC, datetime
 
 from .cache import get_cache
-from .config import get_config, get_data_dir
+from .config import get_config
 from .models import Address, Draft
 
 
@@ -64,8 +63,7 @@ class DraftManager:
 
     def _save(self, draft: Draft) -> None:
         """Save a draft to the database."""
-        db_path = get_data_dir() / "cache.db"
-        with sqlite3.connect(db_path) as conn:
+        with self.cache._connect() as conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO drafts (
@@ -95,9 +93,7 @@ class DraftManager:
 
     def get(self, draft_id: str) -> Draft | None:
         """Get a draft by ID."""
-        db_path = get_data_dir() / "cache.db"
-        with sqlite3.connect(db_path) as conn:
-            conn.row_factory = sqlite3.Row
+        with self.cache._connect() as conn:
             row = conn.execute(
                 "SELECT * FROM drafts WHERE draft_id = ?", (draft_id,)
             ).fetchone()
@@ -123,10 +119,7 @@ class DraftManager:
 
     def list(self, account: str | None = None) -> list[Draft]:
         """List all drafts, optionally filtered by account."""
-        db_path = get_data_dir() / "cache.db"
-        with sqlite3.connect(db_path) as conn:
-            conn.row_factory = sqlite3.Row
-
+        with self.cache._connect() as conn:
             if account:
                 rows = conn.execute(
                     "SELECT * FROM drafts WHERE account = ? ORDER BY updated_at DESC",
@@ -166,8 +159,7 @@ class DraftManager:
 
     def delete(self, draft_id: str) -> bool:
         """Delete a draft. Returns True if deleted, False if not found."""
-        db_path = get_data_dir() / "cache.db"
-        with sqlite3.connect(db_path) as conn:
+        with self.cache._connect() as conn:
             cursor = conn.execute(
                 "DELETE FROM drafts WHERE draft_id = ?", (draft_id,)
             )

@@ -11,9 +11,6 @@ from clerk.models import Address
 @pytest.fixture
 def draft_manager(tmp_path, monkeypatch):
     """Create a draft manager with a temporary database."""
-    # Patch get_data_dir to use temp directory
-    monkeypatch.setattr("clerk.drafts.get_data_dir", lambda: tmp_path)
-
     # Create cache database schema and patch get_cache to return it
     from clerk.cache import Cache
 
