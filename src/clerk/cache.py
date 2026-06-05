@@ -309,7 +309,7 @@ class Cache:
                     msg.date.isoformat(),
                     msg.body_text,
                     msg.body_html,
-                    0,
+                    1 if msg.body_skipped else 0,
                     flags_to_bitmask(msg.flags),
                     json.dumps([a.model_dump() for a in msg.attachments]),
                     msg.in_reply_to,

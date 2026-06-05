@@ -690,3 +690,25 @@ def test_update_flags_writes_bitmask(tmp_path):
     cache.update_flags("<f1@x>", [MessageFlag.SEEN, MessageFlag.ANSWERED])
     with cache._connect() as conn:
         assert conn.execute("SELECT flags FROM messages WHERE uid = 23").fetchone()["flags"] == 3
+
+
+def test_store_message_persists_body_skipped_true(tmp_path):
+    cache = Cache(db_path=tmp_path / "c.db")
+    msg = _msg(30, "<bs1@x>")
+    msg.body_skipped = True
+    cache.store_message(msg)
+    with cache._connect() as conn:
+        row = conn.execute(
+            "SELECT body_skipped FROM messages WHERE account='acct' AND folder='INBOX' AND uid=30"
+        ).fetchone()
+    assert row["body_skipped"] == 1
+
+
+def test_store_message_persists_body_skipped_false(tmp_path):
+    cache = Cache(db_path=tmp_path / "c.db")
+    cache.store_message(_msg(31, "<bs2@x>"))
+    with cache._connect() as conn:
+        row = conn.execute(
+            "SELECT body_skipped FROM messages WHERE account='acct' AND folder='INBOX' AND uid=31"
+        ).fetchone()
+    assert row["body_skipped"] == 0
