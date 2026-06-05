@@ -887,6 +887,54 @@ class TestSendReservation:
         assert result.success is False
 
 
+class TestSendSafetyLayers:
+    """check_send_allowed: blocked recipients (to/cc/bcc, case-insensitive) and FROM match."""
+
+    def _draft(self, to=None, cc=None, bcc=None, account="test"):
+        from clerk.models import Draft
+
+        return Draft(
+            draft_id="d1",
+            account=account,
+            to=to or [Address(addr="ok@example.com")],
+            cc=cc or [],
+            bcc=bcc or [],
+            subject="s",
+            body_text="b",
+        )
+
+    def test_blocked_recipient_in_to(self, api, monkeypatch):
+        monkeypatch.setattr(api.config.send, "blocked_recipients", ["bad@example.com"])
+        draft = self._draft(to=[Address(addr="bad@example.com")])
+        allowed, error = api.check_send_allowed(draft, "test")
+        assert allowed is False
+        assert "blocked" in (error or "").lower()
+
+    def test_blocked_recipient_case_insensitive(self, api, monkeypatch):
+        monkeypatch.setattr(api.config.send, "blocked_recipients", ["BAD@EXAMPLE.COM"])
+        draft = self._draft(to=[Address(addr="bad@example.com")])
+        allowed, _ = api.check_send_allowed(draft, "test")
+        assert allowed is False
+
+    def test_blocked_recipient_in_cc_and_bcc(self, api, monkeypatch):
+        monkeypatch.setattr(api.config.send, "blocked_recipients", ["bad@example.com"])
+        cc_draft = self._draft(cc=[Address(addr="bad@example.com")])
+        bcc_draft = self._draft(bcc=[Address(addr="bad@example.com")])
+        assert api.check_send_allowed(cc_draft, "test")[0] is False
+        assert api.check_send_allowed(bcc_draft, "test")[0] is False
+
+    def test_account_mismatch_rejected(self, api):
+        draft = self._draft(account="other")
+        allowed, error = api.check_send_allowed(draft, "test")
+        assert allowed is False
+        assert "other" in (error or "")
+
+    def test_clean_draft_allowed(self, api):
+        allowed, error = api.check_send_allowed(self._draft(), "test")
+        assert allowed is True
+        assert error is None
+
+
 class TestStatusEnrichment:
     """clerk_status (via get_status) reports staleness and a cache summary."""
 
