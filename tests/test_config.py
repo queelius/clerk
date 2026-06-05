@@ -119,6 +119,12 @@ class TestCacheConfig:
     def test_cache_config_body_max_bytes_custom(self):
         assert CacheConfig(body_max_bytes=2048).body_max_bytes == 2048
 
+    def test_cache_config_sync_chunk_size_default(self):
+        assert CacheConfig().sync_chunk_size == 200
+
+    def test_cache_config_sync_chunk_size_custom(self):
+        assert CacheConfig(sync_chunk_size=50).sync_chunk_size == 50
+
 
 class TestSendConfig:
     def test_defaults(self):

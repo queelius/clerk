@@ -146,6 +146,11 @@ class CacheConfig(BaseModel):
         ge=1024,
         description="Bodies larger than this are not cached (fetched on demand)",
     )
+    sync_chunk_size: int = Field(
+        default=200,
+        ge=1,
+        description="Messages fetched per sync chunk (watermark advances per chunk)",
+    )
 
 
 class SendConfig(BaseModel):
