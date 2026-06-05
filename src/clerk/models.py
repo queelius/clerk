@@ -82,6 +82,10 @@ class Message(BaseModel):
 
     body_text: str | None = Field(default=None, description="Plain text body")
     body_html: str | None = Field(default=None, description="HTML body")
+    body_skipped: bool = Field(
+        default=False,
+        description="True if the body was too large to cache; fetch on demand",
+    )
 
     attachments: list[Attachment] = Field(default_factory=list)
     flags: list[MessageFlag] = Field(default_factory=list)

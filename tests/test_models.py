@@ -34,6 +34,29 @@ def test_bitmask_to_flags_zero_is_empty():
     assert bitmask_to_flags(0) == []
 
 
+def test_message_body_skipped_defaults_false():
+    msg = Message(
+        message_id="<a@b>",
+        conv_id="abc123",
+        **{"from": Address(addr="x@y.com")},
+        date=datetime(2026, 1, 1),
+        uid=1,
+    )
+    assert msg.body_skipped is False
+
+
+def test_message_body_skipped_settable():
+    msg = Message(
+        message_id="<a@b>",
+        conv_id="abc123",
+        **{"from": Address(addr="x@y.com")},
+        date=datetime(2026, 1, 1),
+        uid=1,
+        body_skipped=True,
+    )
+    assert msg.body_skipped is True
+
+
 def test_message_carries_uid():
     msg = Message(
         message_id="<a@b>",
