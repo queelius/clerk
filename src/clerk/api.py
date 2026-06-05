@@ -547,7 +547,9 @@ class ClerkAPI:
           derive a plain-text body so the FTS index has searchable content.
         """
         cap = self.config.cache.body_max_bytes
-        total = len(msg.body_text or "") + len(msg.body_html or "")
+        total = len((msg.body_text or "").encode("utf-8")) + len(
+            (msg.body_html or "").encode("utf-8")
+        )
         if total > cap:
             msg.body_text = None
             msg.body_html = None

@@ -659,3 +659,16 @@ class TestEagerBodies:
                 "SELECT body_skipped FROM messages WHERE message_id='<e3@x>'"
             ).fetchone()
         assert row["body_skipped"] == 1
+
+    def test_cap_measures_bytes_not_chars(self, api, cache, monkeypatch):
+        # 4-byte-per-char content: char count below cap, byte count above it.
+        monkeypatch.setattr(api.config.cache, "body_max_bytes", 1000)
+        body = "\U0001F600" * 300  # 300 chars, 1200 UTF-8 bytes
+        msg = self._msg(43, "<e4@x>", body_text=body)
+        self._mock_client(monkeypatch, [msg], 43)
+        api.sync_folder(account="test", folder="INBOX")
+        with cache._connect() as conn:
+            row = conn.execute(
+                "SELECT body_skipped FROM messages WHERE message_id='<e4@x>'"
+            ).fetchone()
+        assert row["body_skipped"] == 1
