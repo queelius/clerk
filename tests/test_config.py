@@ -125,6 +125,12 @@ class TestCacheConfig:
     def test_cache_config_sync_chunk_size_custom(self):
         assert CacheConfig(sync_chunk_size=50).sync_chunk_size == 50
 
+    def test_cache_config_reconcile_window_default(self):
+        assert CacheConfig().reconcile_window == 500
+
+    def test_cache_config_reconcile_window_can_disable(self):
+        assert CacheConfig(reconcile_window=0).reconcile_window == 0
+
 
 class TestSendConfig:
     def test_defaults(self):

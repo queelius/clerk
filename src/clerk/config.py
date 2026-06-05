@@ -151,6 +151,11 @@ class CacheConfig(BaseModel):
         ge=1,
         description="Messages fetched per sync chunk (watermark advances per chunk)",
     )
+    reconcile_window: int = Field(
+        default=500,
+        ge=0,
+        description="Re-check flags/expunges for the most-recent N cached UIDs per sync (0 disables)",
+    )
 
 
 class SendConfig(BaseModel):
