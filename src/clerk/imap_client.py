@@ -53,53 +53,27 @@ def parse_address(addr_tuple: tuple[str, str] | None) -> Address | None:
 def parse_address_list(header: str | None) -> list[Address]:
     """Parse an address header into Address objects.
 
-    Uses email.utils.getaddresses, which is RFC 5322 aware: it does NOT split on
-    commas inside quoted display names (the common Outlook "Last, First" form),
-    so the display name and the real email address are both preserved.
-
-    Bare display names (no '<' and no '@') bypass getaddresses because that
-    function truncates multi-word bare tokens after the first word; they are
-    kept verbatim instead.
+    Delegates tokenization to email.utils.getaddresses, which is RFC 5322 aware:
+    it does not split on commas inside quoted "Last, First" display names, so the
+    display name and the real email address are both preserved. A header with no
+    '@' at all is not an address list, so it is kept verbatim as a single bare
+    display name (getaddresses would otherwise truncate a multi-word bare name).
     """
     if not header:
         return []
-
-    # Split into address tokens using a quote-aware comma scan.  We cannot
-    # delegate the entire split to getaddresses because bare multi-word display
-    # names (e.g. "Just A Name") get truncated by that function.
-    tokens: list[str] = []
-    current: list[str] = []
-    in_quotes = False
-    for ch in header:
-        if ch == '"':
-            in_quotes = not in_quotes
-            current.append(ch)
-        elif ch == "," and not in_quotes:
-            tokens.append("".join(current).strip())
-            current = []
-        else:
-            current.append(ch)
-    if current:
-        tokens.append("".join(current).strip())
-
+    if "@" not in header:
+        text = header.strip()
+        return [Address(addr="", name=decode_header_value(text))] if text else []
     addresses: list[Address] = []
-    for tok in tokens:
-        if not tok:
-            continue
-        if "<" not in tok and "@" not in tok:
-            # Bare display name with no real email (a malformed M365 quirk):
-            # preserve the whole token as the name.
-            addresses.append(Address(addr="", name=tok))
-        else:
-            for raw_name, raw_addr in email.utils.getaddresses([tok]):
-                name = decode_header_value(raw_name)
-                addr = raw_addr.strip()
-                if addr and "@" in addr:
-                    addresses.append(Address(addr=addr, name=name))
-                elif name or addr:
-                    # Bare display name surfaced through getaddresses
-                    # (single-word bare name without angle brackets).
-                    addresses.append(Address(addr="", name=name or addr))
+    for raw_name, raw_addr in email.utils.getaddresses([header]):
+        name = decode_header_value(raw_name)
+        addr = raw_addr.strip()
+        if addr and "@" in addr:
+            addresses.append(Address(addr=addr, name=name))
+        elif name or addr:
+            # A token with no real email (e.g. a single-word bare name surfaced
+            # by getaddresses): keep whatever text we have as the name.
+            addresses.append(Address(addr="", name=name or addr))
     return addresses
 
 
