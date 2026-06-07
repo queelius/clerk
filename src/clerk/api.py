@@ -670,7 +670,14 @@ class ClerkAPI:
                     if msg.uid is None:
                         continue
                     self._prepare_body_for_storage(msg)
-                    self.cache.store_message(msg)
+                    try:
+                        self.cache.store_message(msg)
+                    except Exception as e:
+                        print(
+                            f"Warning: store failed for uid {msg.uid}: {e}",
+                            file=sys.stderr,
+                        )
+                        continue
                     self.cache.clear_deadletter(account_name, folder, msg.uid)
                     stored.add(msg.uid)
                     synced += 1
@@ -687,8 +694,16 @@ class ClerkAPI:
                 msgs, failed = client.fetch_uids(folder, chunk, fetch_bodies=True)
                 for msg in msgs:
                     self._prepare_body_for_storage(msg)
-                    self.cache.store_message(msg)
-                    synced += 1
+                    try:
+                        self.cache.store_message(msg)
+                        synced += 1
+                    except Exception as e:
+                        print(
+                            f"Warning: store failed for uid {msg.uid}: {e}",
+                            file=sys.stderr,
+                        )
+                        if msg.uid is not None:
+                            self.cache.record_deadletter(account_name, folder, msg.uid)
                 for uid in failed:
                     self.cache.record_deadletter(account_name, folder, uid)
                 chunk_max = max(chunk)

@@ -609,6 +609,27 @@ class TestSyncFolder:
         assert cache.get_deadletter_uids("test", "INBOX") == []
         assert cache.get_message("<m10@x>") is not None
 
+    def test_store_failure_is_deadlettered_not_fatal(self, api, cache, monkeypatch):
+        good1, bad, good2 = self._msg(10), self._msg(11), self._msg(12)
+        self._client(monkeypatch, [10, 11, 12], ([good1, bad, good2], []))
+
+        real_store = cache.store_message
+
+        def flaky_store(msg):
+            if msg.uid == 11:
+                raise RuntimeError("surrogates not allowed")
+            return real_store(msg)
+
+        monkeypatch.setattr(cache, "store_message", flaky_store)
+
+        result = api.sync_folder(account="test", folder="INBOX")
+
+        assert result["synced"] == 2
+        assert 11 in cache.get_deadletter_uids("test", "INBOX")
+        assert cache.get_sync_state("test", "INBOX")["last_uid"] == 12
+        assert cache.get_message("<m10@x>") is not None
+        assert cache.get_message("<m12@x>") is not None
+
 
 class TestEagerBodies:
     """Sync fetches full bodies and makes them searchable (FTS completeness)."""
