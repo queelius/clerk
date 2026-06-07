@@ -99,3 +99,26 @@ def test_parse_address_list_bare_display_name():
     assert len(addrs) == 1
     assert addrs[0].addr == ""
     assert "Just A Name" in addrs[0].name
+
+
+def test_parse_address_list_quoted_last_first_names():
+    header = '"Towell, Alexander" <atowell@siue.edu>, "Fujinoki, Hiroshi" <hfujino@siue.edu>'
+    addrs = parse_address_list(header)
+    assert [(a.name, a.addr) for a in addrs] == [
+        ("Towell, Alexander", "atowell@siue.edu"),
+        ("Fujinoki, Hiroshi", "hfujino@siue.edu"),
+    ]
+
+
+def test_parse_address_list_plain_and_angle():
+    assert [(a.name, a.addr) for a in parse_address_list("alice@example.com")] == [
+        ("", "alice@example.com")
+    ]
+    assert [(a.name, a.addr) for a in parse_address_list("Alice <alice@example.com>")] == [
+        ("Alice", "alice@example.com")
+    ]
+
+
+def test_parse_address_list_multiple_plain():
+    addrs = parse_address_list("a@x.com, b@y.com")
+    assert [a.addr for a in addrs] == ["a@x.com", "b@y.com"]
