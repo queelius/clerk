@@ -32,6 +32,19 @@ SCHEMA_VERSION = 2
 # Parse-failure dead-letter: retry a UID this many times before giving up.
 _DEADLETTER_MAX_ATTEMPTS = 3
 
+
+def _safe_text(value: str | None) -> str | None:
+    """Make a string safe to bind to SQLite (UTF-8 encodable).
+
+    Some malformed email headers/bodies decode to strings containing lone
+    surrogate code points, which cannot be UTF-8 encoded. SQLite would raise
+    UnicodeEncodeError and abort the whole sync. Replace those code points so a
+    single bad message can never block storage.
+    """
+    if value is None:
+        return None
+    return value.encode("utf-8", "replace").decode("utf-8")
+
 SCHEMA = """
 -- Core message storage. Identity is the server-truthful (account, folder, uid).
 CREATE TABLE IF NOT EXISTS messages (
@@ -256,6 +269,20 @@ class Cache:
         """
         if msg.uid is None:
             raise ValueError("store_message requires msg.uid (the server UID)")
+
+        # Drop lone surrogate code points that malformed mail can carry; an
+        # unsanitized value would crash the SQLite bind and abort the sync.
+        msg.message_id = _safe_text(msg.message_id) or ""
+        msg.subject = _safe_text(msg.subject) or ""
+        msg.body_text = _safe_text(msg.body_text)
+        msg.body_html = _safe_text(msg.body_html)
+        msg.in_reply_to = _safe_text(msg.in_reply_to)
+        msg.from_.addr = _safe_text(msg.from_.addr) or ""
+        msg.from_.name = _safe_text(msg.from_.name) or ""
+        msg.references = [_safe_text(r) or "" for r in msg.references]
+        for _addr in (*msg.to, *msg.cc, *msg.reply_to):
+            _addr.addr = _safe_text(_addr.addr) or ""
+            _addr.name = _safe_text(_addr.name) or ""
 
         root_message_id = compute_root_id(
             msg.message_id, msg.references, msg.in_reply_to
@@ -626,7 +653,7 @@ class Cache:
                 SET body_text = ?, body_html = ?, body_fetched_at = ?, body_skipped = 0
                 WHERE message_id = ?
                 """,
-                (body_text, body_html, datetime.now(UTC).isoformat(), message_id),
+                (_safe_text(body_text), _safe_text(body_html), datetime.now(UTC).isoformat(), message_id),
             )
 
     def move_message(self, message_id: str, folder: str) -> None:

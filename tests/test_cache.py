@@ -852,3 +852,33 @@ def test_finalize_sent_counts_and_records_message_id(tmp_path):
         ).fetchone()
     assert row["status"] == "sent"
     assert row["message_id"] == "<m@x>"
+
+
+# ---------------------------------------------------------------------------
+# Task 1 (field-fixes): lone surrogate sanitization at store boundary
+# ---------------------------------------------------------------------------
+
+
+def test_store_message_survives_lone_surrogate(tmp_path):
+    cache = Cache(db_path=tmp_path / "c.db")
+    msg = _msg(
+        50, "<surr@x>",
+        subject="bad \ud800 subject",
+        body_text="body \udfff text",
+    )
+    cache.store_message(msg)  # must not raise
+    got = cache.get_message("<surr@x>")
+    assert got is not None
+    assert "\ud800" not in (got.subject or "")
+    assert "\udfff" not in (got.body_text or "")
+    assert "subject" in got.subject
+
+
+def test_update_body_survives_lone_surrogate(tmp_path):
+    cache = Cache(db_path=tmp_path / "c.db")
+    cache.store_message(_msg(51, "<surr2@x>", body_text="placeholder"))
+    cache.update_body("<surr2@x>", "recovered \ud83d body", None)
+    got = cache.get_message("<surr2@x>")
+    assert got is not None
+    assert "\ud83d" not in (got.body_text or "")
+    assert "recovered" in got.body_text
