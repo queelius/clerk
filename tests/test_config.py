@@ -3,6 +3,7 @@
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from clerk.config import (
     AccountConfig,
@@ -28,6 +29,12 @@ class TestFromAddress:
     def test_default_name(self):
         addr = FromAddress(address="user@example.com")
         assert addr.name == ""
+
+    def test_rejects_malformed_address(self):
+        # EmailStr validation (via the email-validator package) backs the
+        # FROM-verification send-safety layer; a non-address must not load.
+        with pytest.raises(ValidationError):
+            FromAddress(address="not-an-email")
 
 
 class TestImapConfig:
@@ -145,6 +152,10 @@ class TestSendConfig:
     def test_blocked_recipients(self):
         send = SendConfig(blocked_recipients=["spam@example.com", "test@example.com"])
         assert len(send.blocked_recipients) == 2
+
+    def test_blocked_recipients_rejects_malformed_address(self):
+        with pytest.raises(ValidationError):
+            SendConfig(blocked_recipients=["spam@example.com", "spam-at-example"])
 
 
 class TestPrioritiesConfig:
