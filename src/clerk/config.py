@@ -306,11 +306,13 @@ def save_config(config: ClerkConfig, config_path: Path | None = None) -> None:
     # Ensure parent directory exists
     config_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Convert to dict, handling the 'from' field alias
-    data = config.model_dump(by_alias=True, exclude_none=True)
+    # Convert to dict, handling the 'from' field alias. mode="json" turns Path
+    # and other non-YAML types into plain values, and safe_dump refuses Python
+    # objects outright, so load_config (yaml.safe_load) can always read it back.
+    data = config.model_dump(mode="json", by_alias=True, exclude_none=True)
 
     with open(config_path, "w") as f:
-        yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+        yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
 
 
 def ensure_dirs() -> None:

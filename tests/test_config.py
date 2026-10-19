@@ -365,6 +365,35 @@ class TestSaveConfig:
         assert "test" in loaded.accounts
         assert loaded.accounts["test"].from_.address == "user@example.com"
 
+    def test_save_config_writes_plain_yaml_for_path_fields(self, tmp_path):
+        """Path fields must serialize as strings, never as Python-tagged YAML.
+
+        A Path written by yaml.dump becomes !!python/object/apply:...PosixPath,
+        which yaml.safe_load (and so load_config) cannot read back, bricking
+        the config after any CLI edit such as `clerk accounts remove`.
+        """
+        from clerk.config import OAuthConfig, save_config
+
+        creds = tmp_path / "credentials.json"
+        config = ClerkConfig(
+            default_account="gmail",
+            accounts={
+                "gmail": AccountConfig(
+                    protocol="gmail",
+                    oauth=OAuthConfig(client_id_file=creds),
+                    **{"from": FromAddress(address="me@gmail.com")},
+                ),
+            },
+        )
+
+        config_path = tmp_path / "config.yaml"
+        save_config(config, config_path)
+
+        text = config_path.read_text()
+        assert "!!python" not in text
+        assert yaml.safe_load(text)["accounts"]["gmail"]["oauth"]["client_id_file"] == str(creds)
+        assert load_config(config_path).accounts["gmail"].oauth.client_id_file == creds
+
     def test_save_config_creates_parent_dirs(self, tmp_path):
         """Test that save_config creates parent directories."""
         from clerk.config import save_config
