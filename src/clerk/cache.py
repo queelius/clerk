@@ -360,6 +360,20 @@ class Cache:
                 return self._row_to_message(row)
         return None
 
+    @staticmethod
+    def _row_to_conversation_summary(row: sqlite3.Row) -> ConversationSummary:
+        """Decode the aggregate fields shared by conversation summary queries."""
+        return ConversationSummary(
+            conv_id=row["conv_id"],
+            subject=row["subject"] or "(no subject)",
+            participants=row["participants"].split(",") if row["participants"] else [],
+            message_count=row["message_count"],
+            unread_count=row["unread_count"],
+            latest_date=datetime.fromisoformat(row["latest_date"]),
+            snippet=(row["snippet"] or "")[:100],
+            account=row["account"],
+        )
+
     def find_conversations_by_prefix(self, prefix: str) -> list[ConversationSummary]:
         """Find all conversations matching an ID prefix.
 
@@ -402,25 +416,7 @@ class Cache:
                 (prefix + "%",),
             ).fetchall()
 
-            summaries = []
-            for row in rows:
-                participants = row["participants"].split(",") if row["participants"] else []
-                snippet = (row["snippet"] or "")[:100]
-
-                summaries.append(
-                    ConversationSummary(
-                        conv_id=row["conv_id"],
-                        subject=row["subject"] or "(no subject)",
-                        participants=participants,
-                        message_count=row["message_count"],
-                        unread_count=row["unread_count"],
-                        latest_date=datetime.fromisoformat(row["latest_date"]),
-                        snippet=snippet,
-                        account=row["account"],
-                    )
-                )
-
-            return summaries
+            return [self._row_to_conversation_summary(row) for row in rows]
 
     def get_conversation(self, conv_id: str) -> Conversation | None:
         """Get a conversation by ID or unique prefix.
@@ -524,25 +520,7 @@ class Cache:
 
             rows = conn.execute(query, params).fetchall()
 
-            summaries = []
-            for row in rows:
-                participants = row["participants"].split(",") if row["participants"] else []
-                snippet = (row["snippet"] or "")[:100]
-
-                summaries.append(
-                    ConversationSummary(
-                        conv_id=row["conv_id"],
-                        subject=row["subject"] or "(no subject)",
-                        participants=participants,
-                        message_count=row["message_count"],
-                        unread_count=row["unread_count"],
-                        latest_date=datetime.fromisoformat(row["latest_date"]),
-                        snippet=snippet,
-                        account=row["account"],
-                    )
-                )
-
-            return summaries
+            return [self._row_to_conversation_summary(row) for row in rows]
 
     def execute_readonly_sql(
         self,

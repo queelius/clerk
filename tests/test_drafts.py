@@ -32,6 +32,29 @@ class TestGenerateDraftId:
 
 
 class TestDraftManager:
+    @pytest.mark.parametrize("lookup", ["get", "list"])
+    def test_load_preserves_complete_draft(self, draft_manager, lookup):
+        created = draft_manager.create(
+            account="test",
+            to=[Address(addr="to@example.com", name="Recipient")],
+            cc=[Address(addr="cc@example.com")],
+            bcc=[Address(addr="bcc@example.com")],
+            subject="Re: Thread",
+            body_text="A reply with Unicode: café",
+            body_html="<p>A reply</p>",
+            reply_to_conv_id="abc123abc123",
+            in_reply_to="<parent@example.com>",
+            references=["<root@example.com>", "<parent@example.com>"],
+        )
+
+        loaded = (
+            draft_manager.get(created.draft_id)
+            if lookup == "get"
+            else draft_manager.list(account="test")[0]
+        )
+
+        assert loaded == created
+
     def test_create_draft(self, draft_manager):
         draft = draft_manager.create(
             account="test",

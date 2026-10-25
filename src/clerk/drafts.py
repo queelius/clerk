@@ -2,6 +2,7 @@
 
 import json
 import secrets
+import sqlite3
 from datetime import UTC, datetime
 
 from .cache import get_cache
@@ -91,31 +92,32 @@ class DraftManager:
                 ),
             )
 
+    @staticmethod
+    def _row_to_draft(row: sqlite3.Row) -> Draft:
+        """Decode a stored draft consistently for single and bulk reads."""
+        return Draft(
+            draft_id=row["draft_id"],
+            account=row["account"],
+            to=[Address(**a) for a in json.loads(row["to_json"])],
+            cc=[Address(**a) for a in json.loads(row["cc_json"])],
+            bcc=[Address(**a) for a in json.loads(row["bcc_json"])],
+            subject=row["subject"],
+            body_text=row["body_text"],
+            body_html=row["body_html"],
+            reply_to_conv_id=row["reply_to_conv_id"],
+            in_reply_to=row["in_reply_to"],
+            references=json.loads(row["references_json"]),
+            created_at=datetime.fromisoformat(row["created_at"]),
+            updated_at=datetime.fromisoformat(row["updated_at"]),
+        )
+
     def get(self, draft_id: str) -> Draft | None:
         """Get a draft by ID."""
         with self.cache._connect() as conn:
             row = conn.execute(
                 "SELECT * FROM drafts WHERE draft_id = ?", (draft_id,)
             ).fetchone()
-
-            if not row:
-                return None
-
-            return Draft(
-                draft_id=row["draft_id"],
-                account=row["account"],
-                to=[Address(**a) for a in json.loads(row["to_json"])],
-                cc=[Address(**a) for a in json.loads(row["cc_json"])],
-                bcc=[Address(**a) for a in json.loads(row["bcc_json"])],
-                subject=row["subject"],
-                body_text=row["body_text"],
-                body_html=row["body_html"],
-                reply_to_conv_id=row["reply_to_conv_id"],
-                in_reply_to=row["in_reply_to"],
-                references=json.loads(row["references_json"]),
-                created_at=datetime.fromisoformat(row["created_at"]),
-                updated_at=datetime.fromisoformat(row["updated_at"]),
-            )
+            return self._row_to_draft(row) if row else None
 
     def list(self, account: str | None = None) -> list[Draft]:
         """List all drafts, optionally filtered by account."""
@@ -130,27 +132,7 @@ class DraftManager:
                     "SELECT * FROM drafts ORDER BY updated_at DESC"
                 ).fetchall()
 
-            drafts = []
-            for row in rows:
-                drafts.append(
-                    Draft(
-                        draft_id=row["draft_id"],
-                        account=row["account"],
-                        to=[Address(**a) for a in json.loads(row["to_json"])],
-                        cc=[Address(**a) for a in json.loads(row["cc_json"])],
-                        bcc=[Address(**a) for a in json.loads(row["bcc_json"])],
-                        subject=row["subject"],
-                        body_text=row["body_text"],
-                        body_html=row["body_html"],
-                        reply_to_conv_id=row["reply_to_conv_id"],
-                        in_reply_to=row["in_reply_to"],
-                        references=json.loads(row["references_json"]),
-                        created_at=datetime.fromisoformat(row["created_at"]),
-                        updated_at=datetime.fromisoformat(row["updated_at"]),
-                    )
-                )
-
-            return drafts
+            return [self._row_to_draft(row) for row in rows]
 
     def update(self, draft: Draft) -> None:
         """Update an existing draft."""

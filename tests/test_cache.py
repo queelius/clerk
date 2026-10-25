@@ -67,6 +67,38 @@ class TestCacheBasics:
 
 
 class TestCacheConversations:
+    @pytest.mark.parametrize("lookup", ["list", "prefix"])
+    @pytest.mark.parametrize(
+        "subject,body,expected_subject,expected_snippet",
+        [
+            ("Re: Topic", "x" * 120, "Topic", "x" * 100),
+            ("", None, "(no subject)", ""),
+        ],
+    )
+    def test_summary_display_fields(
+        self, cache, sample_message, lookup, subject, body, expected_subject, expected_snippet
+    ):
+        sample_message.conv_id = "abc123abc123"
+        sample_message.subject = subject
+        sample_message.body_text = body
+        cache.store_message(sample_message)
+
+        summaries = (
+            cache.list_conversations(account=sample_message.account)
+            if lookup == "list"
+            else cache.find_conversations_by_prefix("abc123")
+        )
+
+        assert len(summaries) == 1
+        summary = summaries[0]
+        assert summary.subject == expected_subject
+        assert summary.snippet == expected_snippet
+        assert summary.participants == [sample_message.from_.addr]
+        assert summary.latest_date == sample_message.date
+        assert summary.message_count == 1
+        assert summary.unread_count == 0
+        assert summary.account == sample_message.account
+
     def test_get_conversation(self, cache):
         # Create messages in a conversation
         conv_id = "conv_thread123"

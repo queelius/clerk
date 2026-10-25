@@ -744,20 +744,7 @@ class ImapClient:
 
     def archive_message(self, message_id: str, from_folder: str = "INBOX") -> None:
         """Archive a message (move to Archive folder or All Mail for Gmail)."""
-        # Try common archive folder names
-        folders = self.list_folders()
-        folder_names = [f.name for f in folders]
-
-        archive_folder = None
-        for name in ["Archive", "[Gmail]/All Mail", "All Mail", "Archives"]:
-            if name in folder_names:
-                archive_folder = name
-                break
-
-        if not archive_folder:
-            raise ValueError("Could not find archive folder")
-
-        self.move_message(message_id, from_folder, archive_folder)
+        self.move_message(message_id, from_folder, self.find_archive_folder())
 
 
 def get_imap_client(account_name: str | None = None) -> ImapClient:

@@ -2,6 +2,8 @@
 from datetime import datetime
 from unittest.mock import MagicMock
 
+import pytest
+
 from clerk.config import AccountConfig, ImapConfig, SmtpConfig
 from clerk.imap_client import ImapClient
 from clerk.models import MessageFlag
@@ -141,6 +143,17 @@ def test_archive_message_by_uid_moves_to_archive():
     ]
     c.archive_message_by_uid("INBOX", 5)
     c._client.move.assert_called_once_with([5], "[Gmail]/All Mail")
+
+
+@pytest.mark.parametrize("folder", ["Archive", "[Gmail]/All Mail", "All Mail", "Archives"])
+def test_legacy_archive_resolves_provider_folder(folder):
+    c = _client()
+    c._client.list_folders.return_value = [((), b"/", "INBOX"), ((), b"/", folder)]
+    c._client.search.return_value = [9]
+
+    c.archive_message("<m9@x>")
+
+    c._client.move.assert_called_once_with([9], folder)
 
 
 def test_legacy_move_message_uses_move_not_plain_expunge():
